@@ -7,8 +7,8 @@ from pathlib import Path
 
 import streamlit as st
 
-from .pipeline import run_compliance
-from .schemas import (
+from pharma_ad_compliance.pipeline import run_compliance
+from pharma_ad_compliance.schemas import (
     ImageCreative,
     Severity,
     TextCreative,
