@@ -1,16 +1,23 @@
 """Shared helper for single-rule checkers.
 
-Each rule_checker module defines its own `RULE_ID`, `SYSTEM_PROMPT_SUFFIX` and
-exports `async def check(parsed, drug_class) -> list[Violation]`. The orchestrator
+Each rule_checker module defines its own `RULE_ID` and `FOCUS` and exports
+`async def check(parsed, drug_class) -> list[Violation]`. The orchestrator
 gathers them in parallel via `asyncio.gather`.
+
+We parse the model's JSON manually (rather than via `run_json`) so we can
+**force `rule_id`** to the checker's own value before Pydantic validation.
+Models occasionally invent sub-rule ids like `ART24_OTHER_P6`, which would
+otherwise crash the enum validator.
 """
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+import json
+
+from pydantic import ValidationError
 
 from ...rag import get_article24_text
 from ...schemas import DrugClass, ParsedCreative, RuleId, Severity, Violation
-from .._llm import run_json
+from .._llm import LLMOutputError, _collect_text, _extract_json
 
 _BASE_SYSTEM_PROMPT = """\
 Ты — комплаенс-аналитик ФАС, проверяющий рекламу лекарственных средств на
@@ -29,11 +36,10 @@ _BASE_SYSTEM_PROMPT = """\
   - RECOMMENDATION — стилистическая правка, на усмотрение автора.
 - Если нарушений по данному подпункту НЕТ — верни пустой список violations.
 
-Верни строго JSON одного формата:
+Верни строго JSON одного формата (поле `rule_id` НЕ заполняй — оно будет проставлено автоматически):
 {
   "violations": [
     {
-      "rule_id": "<RuleId>",
       "severity": "CRITICAL|WARNING|RECOMMENDATION",
       "quote": "<точная цитата или null>",
       "explanation": "<почему это нарушение>",
@@ -47,10 +53,6 @@ _BASE_SYSTEM_PROMPT = """\
 {law_text}
 ---
 """
-
-
-class _CheckerOutput(BaseModel):
-    violations: list[Violation] = Field(default_factory=list)
 
 
 def _build_system_prompt(rule_id: RuleId, focus_instruction: str) -> str:
@@ -74,18 +76,29 @@ async def check_rule(
         f"Категория препарата: {drug_class.value}\n\n"
         f"Текст креатива:\n---\n{parsed.extracted_text}\n---"
     )
-    output = await run_json(
+    raw = await _collect_text(
         prompt=user_prompt,
         system_prompt=_build_system_prompt(rule_id, focus_instruction),
-        schema=_CheckerOutput,
     )
-    # Force rule_id consistency — the model occasionally substitutes ART24_OTHER.
-    return [
-        v.model_copy(update={"rule_id": rule_id})
-        if v.rule_id != rule_id and rule_id is not RuleId.ART24_OTHER
-        else v
-        for v in output.violations
-    ]
+    payload = _extract_json(raw)
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as e:
+        raise LLMOutputError(f"{rule_id.value}: invalid JSON from model:\n{raw[:500]}") from e
+
+    raw_violations = data.get("violations", []) if isinstance(data, dict) else []
+    violations: list[Violation] = []
+    for item in raw_violations:
+        if not isinstance(item, dict):
+            continue
+        item["rule_id"] = rule_id.value  # force consistency before validation
+        try:
+            violations.append(Violation.model_validate(item))
+        except ValidationError as e:
+            raise LLMOutputError(
+                f"{rule_id.value}: violation payload did not match schema: {e}\nItem: {item}"
+            ) from e
+    return violations
 
 
 __all__ = ["check_rule", "Severity", "RuleId"]
