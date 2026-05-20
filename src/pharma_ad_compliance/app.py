@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 import streamlit as st
+from pydantic import ValidationError
 
 from pharma_ad_compliance.pipeline import run_compliance
 from pharma_ad_compliance.schemas import (
@@ -41,8 +42,14 @@ elif mode == "Image":
         st.image(tmp.name, caption=uploaded.name, width=320)
 else:
     url = st.text_input("Landing page URL", placeholder="https://example.com/landing")
-    if url.strip():
-        creative = UrlCreative(url=url)  # type: ignore[arg-type]
+    raw = url.strip()
+    if raw:
+        if "://" not in raw:
+            raw = f"https://{raw}"
+        try:
+            creative = UrlCreative(url=raw)  # type: ignore[arg-type]
+        except ValidationError as e:
+            st.error(f"Invalid URL: {e.errors()[0]['msg']}")
 
 include_rewrite = st.checkbox("Generate compliant rewrite", value=True)
 
