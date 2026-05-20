@@ -10,6 +10,7 @@ from pharma_ad_compliance.schemas import (
     Creative,
     DrugClass,
     ImageCreative,
+    PdfCreative,
     RuleId,
     Severity,
     TextCreative,
@@ -29,10 +30,12 @@ def test_creative_discriminator_dispatches_correctly():
     text = CreativeAdapter.validate_python({"kind": "text", "text": "hello"})
     img = CreativeAdapter.validate_python({"kind": "image", "image_path": "/tmp/x.png"})
     url = CreativeAdapter.validate_python({"kind": "url", "url": "https://example.com/ad"})
+    pdf = CreativeAdapter.validate_python({"kind": "pdf", "pdf_path": "/tmp/x.pdf"})
 
     assert isinstance(text, TextCreative)
     assert isinstance(img, ImageCreative) and img.image_path == Path("/tmp/x.png")
     assert isinstance(url, UrlCreative) and str(url.url).startswith("https://")
+    assert isinstance(pdf, PdfCreative) and pdf.pdf_path == Path("/tmp/x.pdf")
 
 
 def test_unknown_kind_rejected():

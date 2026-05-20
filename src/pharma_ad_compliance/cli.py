@@ -14,6 +14,7 @@ from .pipeline import run_compliance
 from .schemas import (
     ComplianceReport,
     ImageCreative,
+    PdfCreative,
     Severity,
     TextCreative,
     UrlCreative,
@@ -33,19 +34,22 @@ def check(
     text: str | None = typer.Option(None, "--text", help="Inline ad text"),
     image: Path | None = typer.Option(None, "--image", help="Path to a banner image"),
     url: str | None = typer.Option(None, "--url", help="URL of a landing page"),
+    pdf: Path | None = typer.Option(None, "--pdf", help="Path to a PDF (article, landing/email mockup)"),
     creative_id: str | None = typer.Option(None, "--id", help="Optional identifier for the creative"),
     no_rewrite: bool = typer.Option(False, "--no-rewrite", help="Skip the editor agent"),
     out: Path | None = typer.Option(None, "--out", help="Write the report to this path (JSON)"),
 ):
     """Run the compliance pipeline against a single creative."""
-    sources = [s for s in (text, image, url) if s]
+    sources = [s for s in (text, image, url, pdf) if s]
     if len(sources) != 1:
-        raise typer.BadParameter("Provide exactly one of --text, --image, --url")
+        raise typer.BadParameter("Provide exactly one of --text, --image, --url, --pdf")
 
     if text is not None:
         creative = TextCreative(text=text, creative_id=creative_id)
     elif image is not None:
         creative = ImageCreative(image_path=image, creative_id=creative_id)
+    elif pdf is not None:
+        creative = PdfCreative(pdf_path=pdf, creative_id=creative_id)
     else:
         creative = UrlCreative(url=url, creative_id=creative_id)  # type: ignore[arg-type]
 

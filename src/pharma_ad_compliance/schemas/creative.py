@@ -40,8 +40,23 @@ class UrlCreative(BaseModel):
     creative_id: str | None = None
 
 
+class PdfCreative(BaseModel):
+    """PDF input — статьи, макеты сайтов, шаблоны email-рассылок.
+
+    Парсер сначала пробует достать текстовый слой (быстро, дёшево). Если слоя нет
+    или его недостаточно (макет из дизайнерского экспорта), страницы растеризуются
+    и прогоняются через Claude Vision.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["pdf"] = "pdf"
+    pdf_path: Path
+    creative_id: str | None = None
+
+
 Creative = Annotated[
-    TextCreative | ImageCreative | UrlCreative,
+    TextCreative | ImageCreative | UrlCreative | PdfCreative,
     Field(discriminator="kind"),
 ]
 
@@ -51,7 +66,7 @@ class ParsedCreative(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    source_kind: Literal["text", "image", "url"]
+    source_kind: Literal["text", "image", "url", "pdf"]
     extracted_text: str
     creative_id: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)

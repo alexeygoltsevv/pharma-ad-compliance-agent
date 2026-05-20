@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from pharma_ad_compliance.pipeline import run_compliance
 from pharma_ad_compliance.schemas import (
     ImageCreative,
+    PdfCreative,
     Severity,
     TextCreative,
     UrlCreative,
@@ -48,16 +49,21 @@ DRUG_CLASS_LABELS: dict[str, str] = {
     "UNKNOWN": "Не определена",
 }
 
-st.set_page_config(page_title="Pharma Ad Compliance", page_icon="💊", layout="wide")
+st.set_page_config(
+    page_title="AI Агент: Помощник по комплаенсу",
+    page_icon="💊",
+    layout="wide",
+)
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("О проекте")
     st.markdown(
-        "**Pharma Ad Compliance** — мультиагентный анализатор рекламы лекарственных "
-        "средств на соответствие **ФЗ-38 «О рекламе», ст. 24**.\n\n"
-        "На вход — текст, баннер или ссылка. На выходе — отчёт с приоритезацией "
-        "нарушений и автоматический переписанный compliant-вариант."
+        "Мультиагентный анализатор рекламы лекарственных средств на соответствие "
+        "**ФЗ-38 «О рекламе», ст. 24**.\n\n"
+        "На вход — текст, баннер, ссылка или PDF (статья / макет лендинга / шаблон "
+        "email-рассылки). На выходе — отчёт с приоритезацией нарушений и автоматический "
+        "переписанный compliant-вариант."
     )
 
     st.divider()
@@ -74,15 +80,16 @@ with st.sidebar:
     st.caption("Источник: [fas.gov.ru](https://fas.gov.ru) · ФЗ-38 ст. 24")
 
 # ── Header ───────────────────────────────────────────────────────────────────
-st.title("💊 Pharma Ad Compliance")
+st.title("💊 AI Агент: Помощник по комплаенсу")
 st.caption(
-    "Мультиагентная проверка рекламы лекарственных средств на соответствие ст. 24 ФЗ-38."
+    "Инструмент для **медсоветников и бренд-менеджеров**: проверяет рекламу ЛС на "
+    "соответствие ст. 24 ФЗ-38 за минуту вместо 3–7 дней внешней юр-экспертизы."
 )
 
 # ── Input ────────────────────────────────────────────────────────────────────
 mode = st.radio(
     "Тип входных данных",
-    ["📝 Текст", "🖼 Баннер", "🔗 Ссылка"],
+    ["📝 Текст", "🖼 Баннер", "🔗 Ссылка", "📄 PDF (статья / макет / рассылка)"],
     horizontal=True,
     label_visibility="visible",
 )
@@ -109,6 +116,23 @@ elif mode == "🖼 Баннер":
         tmp.close()
         creative = ImageCreative(image_path=Path(tmp.name))
         st.image(tmp.name, caption=uploaded.name, width=360)
+elif mode == "📄 PDF (статья / макет / рассылка)":
+    uploaded_pdf = st.file_uploader(
+        "Загрузите PDF",
+        type=["pdf"],
+        help=(
+            "Поддерживаются: научно-популярные статьи, макеты лендингов и "
+            "email-рассылок, экспорт презентаций. Если в PDF есть текстовый слой — "
+            "он считается напрямую; если только картинки (макет из дизайн-софта) — "
+            "каждая страница автоматически растеризуется и распознаётся Claude Vision."
+        ),
+    )
+    if uploaded_pdf:
+        tmp_pdf = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        tmp_pdf.write(uploaded_pdf.read())
+        tmp_pdf.close()
+        creative = PdfCreative(pdf_path=Path(tmp_pdf.name))
+        st.caption(f"📎 {uploaded_pdf.name} · {uploaded_pdf.size // 1024} КБ")
 else:
     url = st.text_input(
         "Ссылка на лендинг или страницу с рекламой",
@@ -142,8 +166,15 @@ if st.button(
     use_container_width=True,
 ):
     started = time.monotonic()
+    is_pdf = isinstance(creative, PdfCreative)
+    is_image = isinstance(creative, ImageCreative)
     with st.status("Запускаю пайплайн…", expanded=True) as status:
-        st.write("📥 Извлекаю текст из креатива…")
+        if is_pdf:
+            st.write("📄 Извлекаю текст из PDF (текстовый слой + Vision для страниц-картинок)…")
+        elif is_image:
+            st.write("🖼 Распознаю текст с баннера через Claude Vision…")
+        else:
+            st.write("📥 Извлекаю текст из креатива…")
         st.write("🧬 Классифицирую препарат (Rx / OTC / БАД)…")
         st.write("🔍 Запускаю 6 чекеров правил параллельно…")
         if include_rewrite:
@@ -183,7 +214,18 @@ if st.button(
         )
 
     # ── Extracted text (collapsible) ─────────────────────────────────────────
-    with st.expander("📄 Извлечённый текст креатива", expanded=False):
+    extracted_title = "📄 Извлечённый текст креатива"
+    if report.source_kind == "pdf":
+        pages = report.metadata.get("page_count")
+        ocr = report.metadata.get("ocr_pages")
+        bits = []
+        if pages:
+            bits.append(f"страниц: {pages}")
+        if ocr:
+            bits.append(f"OCR через Vision: стр. {ocr}")
+        if bits:
+            extracted_title += f" ({'; '.join(bits)})"
+    with st.expander(extracted_title, expanded=False):
         st.write(report.extracted_text)
 
     # ── Findings ─────────────────────────────────────────────────────────────

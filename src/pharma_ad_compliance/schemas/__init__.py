@@ -3,6 +3,7 @@ from .creative import (
     DrugClass,
     ImageCreative,
     ParsedCreative,
+    PdfCreative,
     TextCreative,
     UrlCreative,
 )
@@ -13,6 +14,7 @@ __all__ = [
     "DrugClass",
     "ImageCreative",
     "ParsedCreative",
+    "PdfCreative",
     "TextCreative",
     "UrlCreative",
     "ComplianceReport",
