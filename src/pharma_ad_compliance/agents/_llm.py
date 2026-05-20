@@ -28,11 +28,10 @@ T = TypeVar("T", bound=BaseModel)
 
 DEFAULT_MODEL = os.environ.get("PHARMA_AD_MODEL", "claude-sonnet-4-6")
 
-# Cap concurrent CLI subprocesses. Running 8 `claude` subprocesses at once
-# (8 agents × asyncio.gather) overwhelms the local CLI and sometimes returns
-# a flaky "error result: success" response. 3 is a safe sweet spot — still
-# meaningfully parallel but each call has space to complete cleanly.
-_CONCURRENT_LLM_CALLS = int(os.environ.get("PHARMA_AD_MAX_CONCURRENCY", "3"))
+# Cap concurrent CLI subprocesses. 8 simultaneous `claude` subprocesses
+# overwhelmed the local CLI ("error result: success"); 5 with the retry layer
+# below has been stable in testing and ~33% faster than the previous cap of 3.
+_CONCURRENT_LLM_CALLS = int(os.environ.get("PHARMA_AD_MAX_CONCURRENCY", "5"))
 _SEMAPHORE: asyncio.Semaphore | None = None
 
 # How many times to retry an LLM call before giving up. Targets transient

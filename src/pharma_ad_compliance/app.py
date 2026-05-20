@@ -415,7 +415,18 @@ if st.session_state.report is not None:
             bits.append(f"OCR через Vision: стр. {ocr}")
         if bits:
             extracted_title += f" ({'; '.join(bits)})"
+    elif report.source_kind == "url" and report.metadata.get("truncated") == "true":
+        original = report.metadata.get("original_length", "?")
+        limit = report.metadata.get("truncated_to", "?")
+        extracted_title += f" (обрезано до {limit} из {original} символов)"
     with st.expander(extracted_title, expanded=False):
+        if report.source_kind == "url" and report.metadata.get("truncated") == "true":
+            st.warning(
+                "Лендинг слишком большой — для скорости проверены только первые "
+                f"{report.metadata.get('truncated_to')} символов основного текста. "
+                "Если важно проверить footer / FAQ — скопируйте этот раздел отдельно "
+                "и прогоните через режим «📝 Текст»."
+            )
         st.write(report.extracted_text)
 
     # ── Main result: table ───────────────────────────────────────────────────

@@ -8,6 +8,10 @@ from ..rag import get_article24_text
 from ..schemas import DrugClass, ParsedCreative, Violation
 from ._llm import run_text
 
+# Переписывание текста по заданным правкам не требует сложного рассуждения — Haiku справляется
+# и в ~3 раза быстрее Sonnet'а.
+_MODEL = "claude-haiku-4-5-20251001"
+
 _SYSTEM_PROMPT = """\
 Ты — старший копирайтер с опытом регуляторной правки рекламы ЛС в РФ.
 Тебе передан исходный текст, категория препарата и список выявленных нарушений ст. 24 ФЗ-38.
@@ -55,4 +59,5 @@ async def rewrite(
     return await run_text(
         prompt=prompt,
         system_prompt=_SYSTEM_PROMPT.replace("{law_text}", get_article24_text()),
+        model=_MODEL,
     )

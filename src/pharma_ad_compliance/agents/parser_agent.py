@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import re
 from pathlib import Path
 
@@ -27,6 +28,10 @@ _PDF_RENDER_DPI = 200
 
 _URL_FETCH_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 _HTML_TAGS_TO_STRIP = ("script", "style", "noscript", "iframe", "svg", "footer", "header", "nav")
+# Landing pages routinely yield 10–20 KB of text after strip (carousels, FAQ, reviews).
+# Sonnet on that much input takes 60–90s per checker call → 8 calls × 5-parallel = ~3 min.
+# Cap to keep checks fast; ad claims and disclaimers are almost always above the fold.
+_URL_TEXT_LIMIT = int(os.environ.get("PHARMA_AD_URL_TEXT_LIMIT", "8000"))
 
 _VISION_SYSTEM_PROMPT = """\
 Ты — OCR-агент для русскоязычной рекламы лекарственных средств.
@@ -50,12 +55,17 @@ async def parse(creative: Creative) -> ParsedCreative:
             creative_id=creative.creative_id,
         )
     if isinstance(creative, UrlCreative):
-        text, title = await _fetch_url(str(creative.url))
+        text, title, original_length = await _fetch_url(str(creative.url))
+        metadata = {"url": str(creative.url), "title": title}
+        if original_length > _URL_TEXT_LIMIT:
+            metadata["truncated"] = "true"
+            metadata["truncated_to"] = str(_URL_TEXT_LIMIT)
+            metadata["original_length"] = str(original_length)
         return ParsedCreative(
             source_kind="url",
             extracted_text=text,
             creative_id=creative.creative_id,
-            metadata={"url": str(creative.url), "title": title},
+            metadata=metadata,
         )
     if isinstance(creative, ImageCreative):
         text = await _ocr_image_bytes(
@@ -79,7 +89,7 @@ async def parse(creative: Creative) -> ParsedCreative:
     raise TypeError(f"Unsupported creative type: {type(creative).__name__}")
 
 
-async def _fetch_url(url: str) -> tuple[str, str]:
+async def _fetch_url(url: str) -> tuple[str, str, int]:
     async with httpx.AsyncClient(
         timeout=_URL_FETCH_TIMEOUT,
         follow_redirects=True,
@@ -95,7 +105,11 @@ async def _fetch_url(url: str) -> tuple[str, str]:
     root = soup.find("main") or soup.find("article") or soup.body or soup
     raw = root.get_text(separator="\n")
     text = re.sub(r"\n{3,}", "\n\n", re.sub(r"[ \t]+", " ", raw)).strip()
-    return text, title
+    original_length = len(text)
+    if original_length > _URL_TEXT_LIMIT:
+        # Cut at the nearest space to avoid mid-word truncation; signal continuation.
+        text = text[:_URL_TEXT_LIMIT].rsplit(" ", 1)[0] + "…"
+    return text, title, original_length
 
 
 async def _ocr_image_bytes(*, data: bytes, media_type: str, hint: str = "изображения") -> str:

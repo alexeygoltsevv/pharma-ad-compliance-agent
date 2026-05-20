@@ -11,6 +11,9 @@ from pydantic import BaseModel, Field
 from ..schemas import DrugClass, ParsedCreative
 from ._llm import run_json
 
+# Простая 4-вариантная классификация — Haiku справится не хуже Sonnet, но в ~3 раза быстрее.
+_MODEL = "claude-haiku-4-5-20251001"
+
 _SYSTEM_PROMPT = """\
 Ты — фарма-аналитик, специализирующийся на регуляторике рекламы ЛС в России.
 По тексту рекламного креатива определи категорию объекта рекламирования:
@@ -40,5 +43,6 @@ async def classify(parsed: ParsedCreative) -> DrugClass:
         prompt=f"Текст креатива:\n\n{parsed.extracted_text}",
         system_prompt=_SYSTEM_PROMPT,
         schema=_ClassifierOutput,
+        model=_MODEL,
     )
     return out.drug_class
