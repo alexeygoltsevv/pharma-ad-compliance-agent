@@ -1,0 +1,8 @@
+[client]
+# Hide developer-mode controls (Clear caches, Rerun, hotkeys).
+# Without this, the `c` hotkey intercepts Cmd+C copies and opens
+# a "Clear caches" modal instead of copying selected text.
+toolbarMode = "viewer"
+
+[browser]
+gatherUsageStats = false

@@ -289,7 +289,15 @@ def _format_table_rows(report: ComplianceReport) -> list[dict[str, str]]:
 
 
 def _format_plain_text_report(report: ComplianceReport, feedback: list[str]) -> str:
-    """Простой text-формат для копирования в буфер."""
+    """Простой text-формат для копирования в буфер.
+
+    Структура (для удобства бренд-менеджера в письме к юристу/команде):
+    1. Шапка: категория, кол-во нарушений, вердикт.
+    2. Список нарушений с цитатой, источником и предложением правки.
+    3. Compliant-переписанный вариант — ТОЛЬКО исправленные фрагменты
+       (пары «было / стало»), а не весь креатив целиком.
+    4. История комментариев (если были итерации).
+    """
     out: list[str] = []
     out.append("ОТЧЁТ О КОМПЛАЕНС-ПРОВЕРКЕ")
     out.append("=" * 60)
@@ -299,10 +307,7 @@ def _format_plain_text_report(report: ComplianceReport, feedback: list[str]) -> 
     if feedback:
         out.append(f"Итераций с комментариями: {len(feedback)}")
     out.append("")
-    out.append("ИСХОДНЫЙ ТЕКСТ КРЕАТИВА")
-    out.append("-" * 60)
-    out.append(report.extracted_text)
-    out.append("")
+
     if report.violations:
         out.append("НАЙДЕННЫЕ НАРУШЕНИЯ")
         out.append("-" * 60)
@@ -315,11 +320,18 @@ def _format_plain_text_report(report: ComplianceReport, feedback: list[str]) -> 
             if v.suggested_fix:
                 out.append(f"   Как исправить: {v.suggested_fix}")
             out.append("")
-    if report.rewritten_text:
+
+    # Только исправленные фрагменты — пары «было / стало».
+    fixes = [v for v in report.violations if v.suggested_fix]
+    if fixes:
         out.append("COMPLIANT-ПЕРЕПИСАННЫЙ ВАРИАНТ")
         out.append("-" * 60)
-        out.append(report.rewritten_text)
-        out.append("")
+        for i, v in enumerate(fixes, 1):
+            original = v.quote or "(отсутствует в креативе)"
+            out.append(f"{i}. Было: «{original}»")
+            out.append(f"   Стало: {v.suggested_fix}")
+            out.append("")
+
     if feedback:
         out.append("КОММЕНТАРИИ ПОЛЬЗОВАТЕЛЯ")
         out.append("-" * 60)
@@ -431,7 +443,6 @@ if st.session_state.report is not None:
     # Compliant rewrite (full text)
     if report.rewritten_text:
         st.subheader("✍️ Compliant-переписанный вариант (целиком)")
-        st.caption("Сгенерировано редактор-агентом. Это **черновик** — обязательно покажите юристу.")
         with st.container(border=True):
             st.write(report.rewritten_text)
 
