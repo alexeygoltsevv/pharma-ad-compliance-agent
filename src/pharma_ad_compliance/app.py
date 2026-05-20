@@ -255,9 +255,18 @@ run_clicked = st.button(
 if run_clicked and creative is not None:
     _reset_run_state()
     st.session_state.creative = creative
-    report, elapsed = _run_pipeline(creative, feedback=[])
-    st.session_state.report = report
-    st.session_state.last_elapsed = elapsed
+    try:
+        report, elapsed = _run_pipeline(creative, feedback=[])
+    except Exception as e:  # noqa: BLE001 — surface any pipeline failure to the user
+        st.error(
+            "❌ Не удалось получить ответ от Claude. Возможные причины: "
+            "временный сбой подписки, исчерпан лимит запросов или CLI потерял "
+            "авторизацию. Запустите проверку ещё раз через 30–60 секунд.\n\n"
+            f"**Техническая ошибка:** `{type(e).__name__}: {e}`"
+        )
+    else:
+        st.session_state.report = report
+        st.session_state.last_elapsed = elapsed
 
 
 # ─── Result rendering ────────────────────────────────────────────────────────
@@ -481,13 +490,24 @@ if st.session_state.report is not None:
                 st.session_state.feedback_history.append(comment)
                 st.session_state.show_refine = False
                 # Re-run pipeline with accumulated feedback
-                report2, elapsed = _run_pipeline(
-                    st.session_state.creative,
-                    feedback=st.session_state.feedback_history,
-                )
-                st.session_state.report = report2
-                st.session_state.last_elapsed = elapsed
-                st.rerun()
+                try:
+                    report2, elapsed = _run_pipeline(
+                        st.session_state.creative,
+                        feedback=st.session_state.feedback_history,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    # Rollback the just-added comment so the user can retry without duplicating it.
+                    st.session_state.feedback_history.pop()
+                    st.error(
+                        "❌ Перезапуск с комментарием не удался. "
+                        "Попробуйте ещё раз через 30–60 секунд "
+                        "(комментарий не сохранён в истории).\n\n"
+                        f"**Техническая ошибка:** `{type(e).__name__}: {e}`"
+                    )
+                else:
+                    st.session_state.report = report2
+                    st.session_state.last_elapsed = elapsed
+                    st.rerun()
 
     # ── Approved confirmation ────────────────────────────────────────────────
     if st.session_state.approved_path:
