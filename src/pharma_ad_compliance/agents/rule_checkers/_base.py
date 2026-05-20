@@ -71,11 +71,18 @@ async def check_rule(
     drug_class: DrugClass,
     rule_id: RuleId,
     focus_instruction: str,
+    user_feedback: list[str] | None = None,
 ) -> list[Violation]:
     user_prompt = (
         f"Категория препарата: {drug_class.value}\n\n"
         f"Текст креатива:\n---\n{parsed.extracted_text}\n---"
     )
+    if user_feedback:
+        feedback_block = "\n".join(f"{i + 1}. {fb}" for i, fb in enumerate(user_feedback))
+        user_prompt += (
+            "\n\nДополнительные указания от пользователя из предыдущих итераций "
+            "(обязательно учти):\n" + feedback_block
+        )
     raw = await _collect_text(
         prompt=user_prompt,
         system_prompt=_build_system_prompt(rule_id, focus_instruction),

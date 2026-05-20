@@ -35,7 +35,12 @@ FOCUS = """\
 """
 
 
-async def check(parsed: ParsedCreative, drug_class: DrugClass) -> list[Violation]:
+async def check(
+    parsed: ParsedCreative,
+    drug_class: DrugClass,
+    *,
+    user_feedback: list[str] | None = None,
+) -> list[Violation]:
     if drug_class == DrugClass.BAD:
         return []
     return await check_rule(
@@ -43,4 +48,5 @@ async def check(parsed: ParsedCreative, drug_class: DrugClass) -> list[Violation
         drug_class=drug_class,
         rule_id=RULE_ID,
         focus_instruction=FOCUS,
+        user_feedback=user_feedback,
     )

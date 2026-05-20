@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import tempfile
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import streamlit as st
@@ -11,12 +14,20 @@ from pydantic import ValidationError
 
 from pharma_ad_compliance.pipeline import run_compliance
 from pharma_ad_compliance.schemas import (
+    ComplianceReport,
+    Creative,
     ImageCreative,
     PdfCreative,
     Severity,
     TextCreative,
     UrlCreative,
 )
+
+# Папка-база знаний для одобренных пользователем отчётов.
+_APPROVED_REPORTS_DIR = Path(__file__).resolve().parents[2].parent / "case_law" / "approved_reports"
+# Если запущено из dev-checkout, путь выше указывает на репо. Иначе создаём в cwd/case_law/.
+if not _APPROVED_REPORTS_DIR.parent.exists():
+    _APPROVED_REPORTS_DIR = Path.cwd() / "case_law" / "approved_reports"
 
 RULE_LABELS: dict[str, str] = {
     "ART24_P1_MINORS": "Обращение к несовершеннолетним",
@@ -42,6 +53,12 @@ SEVERITY_LABELS: dict[Severity, tuple[str, str]] = {
     Severity.RECOMMENDATION: ("🔵 РЕКОМЕНДАЦИЯ", "Стилистическая правка на усмотрение автора."),
 }
 
+SEVERITY_BADGE: dict[Severity, str] = {
+    Severity.CRITICAL: "🔴",
+    Severity.WARNING: "🟡",
+    Severity.RECOMMENDATION: "🔵",
+}
+
 DRUG_CLASS_LABELS: dict[str, str] = {
     "RX": "Рецептурный (Rx)",
     "OTC": "Безрецептурный (OTC)",
@@ -49,13 +66,40 @@ DRUG_CLASS_LABELS: dict[str, str] = {
     "UNKNOWN": "Не определена",
 }
 
+
+# ─── session-state init ──────────────────────────────────────────────────────
+def _init_state() -> None:
+    defaults = {
+        "creative": None,
+        "report": None,
+        "feedback_history": [],
+        "show_refine": False,
+        "include_rewrite": True,
+        "last_elapsed": None,
+        "approved_path": None,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+def _reset_run_state() -> None:
+    """Очищает результат, но НЕ creative — позволяет повторно нажать «Запустить» после approve."""
+    st.session_state.report = None
+    st.session_state.feedback_history = []
+    st.session_state.show_refine = False
+    st.session_state.approved_path = None
+
+
+_init_state()
+
 st.set_page_config(
     page_title="AI Агент: Помощник по комплаенсу",
     page_icon="💊",
     layout="wide",
 )
 
-# ── Sidebar ──────────────────────────────────────────────────────────────────
+# ─── Sidebar ─────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("О проекте")
     st.markdown(
@@ -79,14 +123,20 @@ with st.sidebar:
     )
     st.caption("Источник: [fas.gov.ru](https://fas.gov.ru) · ФЗ-38 ст. 24")
 
-# ── Header ───────────────────────────────────────────────────────────────────
+    if _APPROVED_REPORTS_DIR.exists():
+        approved_count = len(list(_APPROVED_REPORTS_DIR.glob("approved-*.json")))
+        if approved_count:
+            st.divider()
+            st.caption(f"📚 База знаний: **{approved_count}** утверждённых отчётов")
+
+# ─── Header ──────────────────────────────────────────────────────────────────
 st.title("💊 AI Агент: Помощник по комплаенсу")
 st.caption(
     "Инструмент для **медсоветников и бренд-менеджеров**: проверяет рекламу ЛС на "
     "соответствие ст. 24 ФЗ-38 за минуту вместо 3–7 дней внешней юр-экспертизы."
 )
 
-# ── Input ────────────────────────────────────────────────────────────────────
+# ─── Input ───────────────────────────────────────────────────────────────────
 mode = st.radio(
     "Тип входных данных",
     ["📝 Текст", "🖼 Баннер", "🔗 Ссылка", "📄 PDF (статья / макет / рассылка)"],
@@ -94,7 +144,7 @@ mode = st.radio(
     label_visibility="visible",
 )
 
-creative = None
+creative: Creative | None = None
 if mode == "📝 Текст":
     text = st.text_area(
         "Текст рекламного объявления",
@@ -149,26 +199,29 @@ else:
 
 include_rewrite = st.checkbox(
     "Сгенерировать compliant-переписанный вариант",
-    value=True,
+    value=st.session_state.include_rewrite,
     help="Если снять галочку — пропустит этап редактора и завершится на ~10 секунд быстрее.",
 )
+st.session_state.include_rewrite = include_rewrite
 
 st.info(
     "⏱ Анализ занимает **до 1 минуты** — пайплайн делает 8 параллельных LLM-вызовов "
     "(классификатор, 6 чекеров правил и редактор)."
 )
 
-# ── Run ──────────────────────────────────────────────────────────────────────
-if st.button(
-    "▶ Запустить проверку соответствия",
-    type="primary",
-    disabled=creative is None,
-    use_container_width=True,
-):
+
+# ─── Helper: actually run the pipeline ───────────────────────────────────────
+def _run_pipeline(
+    creative_arg: Creative,
+    feedback: list[str],
+) -> tuple[ComplianceReport, float]:
     started = time.monotonic()
-    is_pdf = isinstance(creative, PdfCreative)
-    is_image = isinstance(creative, ImageCreative)
-    with st.status("Запускаю пайплайн…", expanded=True) as status:
+    is_pdf = isinstance(creative_arg, PdfCreative)
+    is_image = isinstance(creative_arg, ImageCreative)
+    with st.status(
+        "Запускаю пайплайн…" if not feedback else f"Повторный прогон с {len(feedback)} комментарием(ями)…",
+        expanded=True,
+    ) as status:
         if is_pdf:
             st.write("📄 Извлекаю текст из PDF (текстовый слой + Vision для страниц-картинок)…")
         elif is_image:
@@ -177,15 +230,131 @@ if st.button(
             st.write("📥 Извлекаю текст из креатива…")
         st.write("🧬 Классифицирую препарат (Rx / OTC / БАД)…")
         st.write("🔍 Запускаю 6 чекеров правил параллельно…")
-        if include_rewrite:
+        if st.session_state.include_rewrite:
             st.write("✍️ Готовлю compliant-переписку…")
-        report = asyncio.run(run_compliance(creative, include_rewrite=include_rewrite))
+        report = asyncio.run(
+            run_compliance(
+                creative_arg,
+                include_rewrite=st.session_state.include_rewrite,
+                user_feedback=feedback or None,
+            )
+        )
         elapsed = time.monotonic() - started
         status.update(label=f"Готово за {elapsed:.1f} с", state="complete", expanded=False)
+    return report, elapsed
 
-    # ── Summary metrics ──────────────────────────────────────────────────────
+
+# ─── Run button ──────────────────────────────────────────────────────────────
+run_clicked = st.button(
+    "▶ Запустить проверку соответствия",
+    type="primary",
+    disabled=creative is None,
+    use_container_width=True,
+)
+
+if run_clicked and creative is not None:
+    _reset_run_state()
+    st.session_state.creative = creative
+    report, elapsed = _run_pipeline(creative, feedback=[])
+    st.session_state.report = report
+    st.session_state.last_elapsed = elapsed
+
+
+# ─── Result rendering ────────────────────────────────────────────────────────
+def _format_table_rows(report: ComplianceReport) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for v in report.violations:
+        comment_parts = [
+            f"{SEVERITY_BADGE[v.severity]} {RULE_LABELS.get(v.rule_id.value, v.rule_id.value)}",
+            f"📖 {RULE_ARTICLE_REFS.get(v.rule_id.value, '')} ФЗ-38",
+            v.explanation,
+        ]
+        rows.append(
+            {
+                "Исходный текст": v.quote or "(отсутствует в креативе)",
+                "Compliant вариант": v.suggested_fix or "—",
+                "Комментарий (источник)": "  \n".join(part for part in comment_parts if part),
+            }
+        )
+    return rows
+
+
+def _format_plain_text_report(report: ComplianceReport, feedback: list[str]) -> str:
+    """Простой text-формат для копирования в буфер."""
+    out: list[str] = []
+    out.append("ОТЧЁТ О КОМПЛАЕНС-ПРОВЕРКЕ")
+    out.append("=" * 60)
+    out.append(f"Категория препарата: {DRUG_CLASS_LABELS.get(report.drug_class.value, report.drug_class.value)}")
+    out.append(f"Нарушений найдено: {len(report.violations)}")
+    out.append(f"Соответствует ст. 24 ФЗ-38: {'Да' if report.is_compliant else 'Нет'}")
+    if feedback:
+        out.append(f"Итераций с комментариями: {len(feedback)}")
+    out.append("")
+    out.append("ИСХОДНЫЙ ТЕКСТ КРЕАТИВА")
+    out.append("-" * 60)
+    out.append(report.extracted_text)
+    out.append("")
+    if report.violations:
+        out.append("НАЙДЕННЫЕ НАРУШЕНИЯ")
+        out.append("-" * 60)
+        for i, v in enumerate(report.violations, 1):
+            out.append(f"{i}. [{v.severity.value}] {RULE_LABELS.get(v.rule_id.value, v.rule_id.value)}")
+            out.append(f"   Источник: {RULE_ARTICLE_REFS.get(v.rule_id.value, '')} ФЗ-38")
+            if v.quote:
+                out.append(f"   Цитата: «{v.quote}»")
+            out.append(f"   Почему: {v.explanation}")
+            if v.suggested_fix:
+                out.append(f"   Как исправить: {v.suggested_fix}")
+            out.append("")
+    if report.rewritten_text:
+        out.append("COMPLIANT-ПЕРЕПИСАННЫЙ ВАРИАНТ")
+        out.append("-" * 60)
+        out.append(report.rewritten_text)
+        out.append("")
+    if feedback:
+        out.append("КОММЕНТАРИИ ПОЛЬЗОВАТЕЛЯ")
+        out.append("-" * 60)
+        for i, fb in enumerate(feedback, 1):
+            out.append(f"{i}. {fb}")
+    return "\n".join(out)
+
+
+def _save_approved(report: ComplianceReport, feedback: list[str]) -> Path:
+    _APPROVED_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d_%H%M%S")
+    digest = hashlib.sha1(report.extracted_text.encode("utf-8")).hexdigest()[:8]
+    out_path = _APPROVED_REPORTS_DIR / f"approved-{timestamp}-{digest}.json"
+    payload = {
+        "id": f"approved-{timestamp}-{digest}",
+        "approved_at": datetime.now(UTC).isoformat(),
+        "input": report.extracted_text,
+        "drug_class": report.drug_class.value,
+        "source_kind": report.source_kind,
+        "violations": [v.model_dump(mode="json") for v in report.violations],
+        "rewritten_text": report.rewritten_text,
+        "user_feedback_history": feedback,
+        "iterations": len(feedback),
+    }
+    out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return out_path
+
+
+# ─── If we have a report, show it ────────────────────────────────────────────
+if st.session_state.report is not None:
+    report = st.session_state.report
+    feedback = st.session_state.feedback_history
+
+    if feedback:
+        st.caption(
+            f"🔄 Итерация **№{len(feedback) + 1}** — учтено комментариев: {len(feedback)}"
+        )
+
+    # Summary metrics
     cols = st.columns(4)
-    cols[0].metric("Категория препарата", DRUG_CLASS_LABELS.get(report.drug_class.value, report.drug_class.value))
+    cols[0].metric(
+        "Категория препарата",
+        DRUG_CLASS_LABELS.get(report.drug_class.value, report.drug_class.value),
+    )
     cols[1].metric("Нарушений найдено", len(report.violations))
     critical_count = len(report.by_severity(Severity.CRITICAL))
     cols[2].metric("Критичных", critical_count, delta_color="inverse")
@@ -213,7 +382,7 @@ if st.button(
             "запускать рекламу в текущем виде нельзя."
         )
 
-    # ── Extracted text (collapsible) ─────────────────────────────────────────
+    # Extracted text
     extracted_title = "📄 Извлечённый текст креатива"
     if report.source_kind == "pdf":
         pages = report.metadata.get("page_count")
@@ -228,48 +397,109 @@ if st.button(
     with st.expander(extracted_title, expanded=False):
         st.write(report.extracted_text)
 
-    # ── Findings ─────────────────────────────────────────────────────────────
+    # ── Main result: table ───────────────────────────────────────────────────
     if report.violations:
-        st.subheader("Найденные нарушения")
-        for sev in (Severity.CRITICAL, Severity.WARNING, Severity.RECOMMENDATION):
-            chunk = report.by_severity(sev)
-            if not chunk:
-                continue
-            label, sublabel = SEVERITY_LABELS[sev]
-            with st.expander(
-                f"{label} — {len(chunk)} шт.",
-                expanded=sev is Severity.CRITICAL,
-            ):
-                st.caption(sublabel)
-                for v in chunk:
-                    with st.container(border=True):
-                        rule_name = RULE_LABELS.get(v.rule_id.value, v.rule_id.value)
-                        article_ref = RULE_ARTICLE_REFS.get(v.rule_id.value, "")
-                        st.markdown(f"**{rule_name}**  \n_{article_ref}_")
-                        if v.quote:
-                            st.markdown(
-                                f"<div style='border-left:3px solid #888;padding-left:12px;"
-                                f"margin:8px 0;color:#ccc;font-style:italic'>"
-                                f"«{v.quote}»</div>",
-                                unsafe_allow_html=True,
-                            )
-                        else:
-                            st.caption("_Нарушение по отсутствию (нет требуемой фразы)_")
-                        st.markdown(f"**Почему:** {v.explanation}")
-                        if v.suggested_fix:
-                            st.markdown(f"**Как исправить:** {v.suggested_fix}")
-
-    # ── Rewritten text ───────────────────────────────────────────────────────
-    if report.rewritten_text:
-        st.subheader("✍️ Compliant-переписанный вариант")
-        st.markdown(
-            "Текст ниже сгенерирован редактор-агентом с учётом всех найденных нарушений. "
-            "Это **черновик** — обязательно покажите юристу перед запуском."
+        st.subheader("📋 Разбор нарушений")
+        st.caption(
+            "Сравнение по каждому проблемному фрагменту: что было → как исправить → "
+            "ссылка на закон. **Скопируйте отдельные ячейки** мышью или нажмите "
+            "кнопку «Скопировать весь отчёт» ниже."
         )
+        rows = _format_table_rows(report)
+        st.dataframe(
+            rows,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Исходный текст": st.column_config.TextColumn(width="medium"),
+                "Compliant вариант": st.column_config.TextColumn(width="medium"),
+                "Комментарий (источник)": st.column_config.TextColumn(width="large"),
+            },
+        )
+    else:
+        st.info("Нарушений не найдено — таблица пустая.")
+
+    # Compliant rewrite (full text)
+    if report.rewritten_text:
+        st.subheader("✍️ Compliant-переписанный вариант (целиком)")
+        st.caption("Сгенерировано редактор-агентом. Это **черновик** — обязательно покажите юристу.")
         with st.container(border=True):
             st.write(report.rewritten_text)
 
-    # ── Raw JSON ─────────────────────────────────────────────────────────────
+    # User feedback history
+    if feedback:
+        with st.expander(f"💬 История комментариев пользователя ({len(feedback)})", expanded=False):
+            for i, fb in enumerate(feedback, 1):
+                st.markdown(f"**Комментарий №{i}:**")
+                st.markdown(f"> {fb}")
+
+    # ── Action buttons ───────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Что делать дальше?")
+
+    plain_report = _format_plain_text_report(report, feedback)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("**📋 Скопировать**")
+        st.caption("Текстовый отчёт для буфера обмена")
+        # st.code shows a built-in copy icon
+        st.code(plain_report, language=None)
+    with c2:
+        st.markdown("**✅ Утвердить ответ**")
+        st.caption("Сохранить в базу знаний `case_law/approved_reports/`")
+        if st.button("Нормальный ответ", key="approve_btn", use_container_width=True):
+            path = _save_approved(report, feedback)
+            st.session_state.approved_path = str(path.relative_to(path.parents[2]))
+            st.success(f"✅ Сохранено: `{st.session_state.approved_path}`")
+    with c3:
+        st.markdown("**🔄 Доработать**")
+        st.caption("Дать комментарий и перезапустить с его учётом")
+        if st.button("Доработать с учётом комментария", key="refine_btn", use_container_width=True):
+            st.session_state.show_refine = True
+
+    # ── Refine form ──────────────────────────────────────────────────────────
+    if st.session_state.show_refine:
+        st.divider()
+        with st.form("refine_form", clear_on_submit=True):
+            st.markdown("**💬 Комментарий для следующей итерации**")
+            user_comment = st.text_area(
+                "Что нужно учесть / переделать?",
+                height=140,
+                placeholder=(
+                    "Например: «Дисклеймер уже есть в footer лендинга — не нужно "
+                    "флагировать его как отсутствующий» или «Замени слово 'безопасен' "
+                    "на 'хорошо переносится по данным КИ' вместо удаления»."
+                ),
+            )
+            submitted = st.form_submit_button("Отправить и перезапустить", type="primary")
+        if submitted:
+            comment = (user_comment or "").strip()
+            if not comment:
+                st.warning("Комментарий пустой — напишите, что нужно учесть.")
+            else:
+                st.session_state.feedback_history.append(comment)
+                st.session_state.show_refine = False
+                # Re-run pipeline with accumulated feedback
+                report2, elapsed = _run_pipeline(
+                    st.session_state.creative,
+                    feedback=st.session_state.feedback_history,
+                )
+                st.session_state.report = report2
+                st.session_state.last_elapsed = elapsed
+                st.rerun()
+
+    # ── Approved confirmation ────────────────────────────────────────────────
+    if st.session_state.approved_path:
+        st.divider()
+        st.success(
+            f"📚 Этот отчёт добавлен в базу знаний: `{st.session_state.approved_path}`.\n\n"
+            "Файл содержит исходный текст, все нарушения, compliant-вариант и "
+            "историю комментариев пользователя. Используйте «▶ Запустить проверку» "
+            "снова для следующего креатива."
+        )
+
+    # Raw JSON
     with st.expander("🛠 Сырой JSON-отчёт (для интеграций)"):
         st.code(report.model_dump_json(indent=2), language="json")
         st.download_button(

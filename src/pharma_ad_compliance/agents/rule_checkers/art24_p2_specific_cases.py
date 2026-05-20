@@ -17,10 +17,16 @@ FOCUS = """\
 """
 
 
-async def check(parsed: ParsedCreative, drug_class: DrugClass) -> list[Violation]:
+async def check(
+    parsed: ParsedCreative,
+    drug_class: DrugClass,
+    *,
+    user_feedback: list[str] | None = None,
+) -> list[Violation]:
     return await check_rule(
         parsed=parsed,
         drug_class=drug_class,
         rule_id=RULE_ID,
         focus_instruction=FOCUS,
+        user_feedback=user_feedback,
     )

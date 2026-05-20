@@ -32,6 +32,7 @@ async def rewrite(
     parsed: ParsedCreative,
     drug_class: DrugClass,
     violations: list[Violation],
+    user_feedback: list[str] | None = None,
 ) -> str | None:
     if not violations:
         return None
@@ -45,6 +46,12 @@ async def rewrite(
         f"Исходный текст:\n---\n{parsed.extracted_text}\n---\n\n"
         f"Выявленные нарушения:\n{violations_block}"
     )
+    if user_feedback:
+        feedback_block = "\n".join(f"{i + 1}. {fb}" for i, fb in enumerate(user_feedback))
+        prompt += (
+            "\n\nКомментарии пользователя из предыдущих итераций (обязательно учти):\n"
+            + feedback_block
+        )
     return await run_text(
         prompt=prompt,
         system_prompt=_SYSTEM_PROMPT.replace("{law_text}", get_article24_text()),
