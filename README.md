@@ -14,7 +14,9 @@
 ![Streamlit](https://img.shields.io/badge/Streamlit-UI-FF4B4B?logo=streamlit&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-3DA639.svg)
 
-<img src="docs/screenshot.png" alt="Отчёт о комплаенс-проверке рекламного креатива" width="880">
+<img src="docs/demo.gif" alt="Демо: загрузка баннера → OCR → отчёт о соответствии" width="880">
+
+<sub>Загрузка баннера → Vision-OCR → отчёт по ст. 24 ФЗ-38. В примере — OTC-баннер с дисклеймером: критичных нарушений нет.</sub>
 
 </div>
 
@@ -89,7 +91,7 @@ make streamlit      # демо-UI на localhost:8501
 
 ```bash
 compliance check --text "Этот препарат полностью безопасен и не имеет побочных эффектов."
-compliance check --image banner.png
+compliance check --image docs/sample-banner.png   # пример баннера из репозитория
 compliance check --url https://example.com/landing
 compliance check --pdf creative.pdf
 ```
@@ -157,6 +159,10 @@ Haiku для классификатора/редактора.
   "rewritten_text": "Препарат показан при ... Имеются противопоказания, проконсультируйтесь со специалистом."
 }
 ```
+
+Тот же разбор в интерфейсе (неконформный текст — 3 критических нарушения):
+
+<div align="center"><img src="docs/screenshot.png" alt="Отчёт по неконформному тексту: метрики, таблица нарушений и переписанный вариант" width="780"></div>
 
 > Примечание по неймингу: суффикс `Pn` в `rule_id` — внутренняя метка чекера, а не
 > номер пункта закона (например, `ART24_P3_NO_SIDE_EFFECTS` соответствует ч. 1 п. 8).
