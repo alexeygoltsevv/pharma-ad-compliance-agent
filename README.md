@@ -1,16 +1,32 @@
-# pharma-ad-compliance-agent
+<div align="center">
 
-Мульти-агентный комплаенс-чек рекламы лекарственных средств по российскому
-законодательству. На вход — **текст, баннер (изображение), ссылка на лендинг или
-PDF** (статья / макет лендинга / email-рассылка). На выходе — структурированный
-отчёт о нарушениях **ФЗ-38 «О рекламе», ст. 24** и автоматически переписанный
-compliant-вариант креатива.
+# 💊 pharma-ad-compliance-agent
+
+### Мульти-агентная проверка рекламы лекарств на соответствие ст. 24 ФЗ-38 — за секунды, а не за дни
+
+**📝 Текст · 🖼 Баннер · 🔗 Ссылка · 📄 PDF → ⚖️ отчёт о нарушениях + ✍️ переписанный compliant-вариант**
+
+[![CI](https://github.com/alexeygoltsevv/pharma-ad-compliance-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/alexeygoltsevv/pharma-ad-compliance-agent/actions/workflows/ci.yml)
+![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+![mypy: checked](https://img.shields.io/badge/mypy-checked-2A6DB2)
+![Claude Agent SDK](https://img.shields.io/badge/Claude_Agent_SDK-powered-D97757?logo=anthropic&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-UI-FF4B4B?logo=streamlit&logoColor=white)
+![License: MIT](https://img.shields.io/badge/License-MIT-3DA639.svg)
+
+<img src="docs/screenshot.png" alt="Отчёт о комплаенс-проверке рекламного креатива" width="880">
+
+</div>
+
+На вход — **текст, баннер (изображение), ссылка на лендинг или PDF** (статья /
+макет лендинга / email-рассылка). На выходе — структурированный отчёт о нарушениях
+**ФЗ-38 «О рекламе», ст. 24** и автоматически переписанный compliant-вариант.
 
 > **Статус:** рабочий пайплайн по всем типам ввода (текст / URL / изображение / PDF).
 > Vision-OCR доставляет картинку в модель честным content-блоком; пайплайн ускорен
 > (~4.5×), защищён от типовых атак на ввод и покрыт тестами + CI.
 
-## Зачем
+## 🎯 Зачем
 
 Рекламу ЛС в России контролирует ФАС по ст. 24 ФЗ-38. Любой новый креатив —
 даже небольшой баннер или письмо в рассылке — нужно согласовывать с медицинскими
@@ -22,7 +38,7 @@ compliant-вариант креатива.
 советники, медиабайеры и дизайнеры могут проверить креатив сами — это сокращает
 цикл согласования в 3–4 раза.
 
-## Архитектура
+## 🏗 Архитектура
 
 ```
 Creative (текст | изображение | url | pdf)
@@ -60,7 +76,7 @@ ComplianceReport (Pydantic) → JSON / Markdown / Streamlit
 с авторизацией по локальному `claude` CLI (подписка Claude Code). `ANTHROPIC_API_KEY`
 для локальной разработки **не требуется**.
 
-## Быстрый старт
+## 🚀 Быстрый старт
 
 ```bash
 make install        # создаёт .venv и ставит зависимости
@@ -78,7 +94,7 @@ compliance check --url https://example.com/landing
 compliance check --pdf creative.pdf
 ```
 
-## Производительность
+## ⚡ Производительность
 
 Пайплайн делает ~8 LLM-вызовов (классификатор + 6 чекеров + редактор). Ключевые
 оптимизации: extended thinking off, единая волна чекеров (семафор 6),
@@ -92,7 +108,7 @@ Haiku для классификатора/редактора.
 Тюнинг через env: `PHARMA_AD_MODEL`, `PHARMA_AD_MAX_CONCURRENCY`,
 `PHARMA_AD_THINKING`, `PHARMA_AD_LLM_TIMEOUT`, `PHARMA_AD_TIMING`.
 
-## Безопасность
+## 🛡 Безопасность
 
 Пользовательский ввод считается недоверенным:
 
@@ -107,7 +123,7 @@ Haiku для классификатора/редактора.
 - **Изоляция агентов** — каждый вызов: `allowed_tools=[]` (чистый text-in/text-out,
   без доступа к ФС/сети), таймаут на вызов, ретраи транзиентных ошибок CLI.
 
-## Пример: было / стало
+## 🔍 Пример: было / стало
 
 **Вход:**
 
@@ -145,7 +161,7 @@ Haiku для классификатора/редактора.
 > Примечание по неймингу: суффикс `Pn` в `rule_id` — внутренняя метка чекера, а не
 > номер пункта закона (например, `ART24_P3_NO_SIDE_EFFECTS` соответствует ч. 1 п. 8).
 
-## Качество и CI
+## ✅ Качество и CI
 
 ```bash
 make lint        # ruff
@@ -159,7 +175,7 @@ CI (GitHub Actions) гоняет **ruff + mypy + pytest (не-LLM)**. Регре
 не должны давать ложных срабатываний); он запускается локально, т.к. у раннера нет
 подписки Claude.
 
-## Структура репозитория
+## 📁 Структура репозитория
 
 ```
 src/pharma_ad_compliance/
@@ -183,11 +199,11 @@ tests/                       # юнит-тесты (без LLM)
 requirements.lock            # запиненные зависимости для воспроизводимой сборки
 ```
 
-## Источники
+## 📚 Источники
 
 - [ФЗ-38 «О рекламе» статья 24](http://www.consultant.ru/document/cons_doc_LAW_58968/) — текст закона.
 - [Решения ФАС по рекламе ЛС](https://fas.gov.ru/) — публичная база, основа `case_law/`.
 
-## Лицензия
+## 📄 Лицензия
 
 MIT — см. [LICENSE](LICENSE).
