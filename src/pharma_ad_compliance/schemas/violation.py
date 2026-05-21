@@ -23,8 +23,10 @@ class Severity(str, Enum):
 class RuleId(str, Enum):
     """Subsections of FZ-38 art. 24 we explicitly check.
 
-    Mapping references the consolidated text of art. 24 ч. 1 ФЗ-38 «О рекламе».
-    See `prompts/fz38_article24.md` for the full text used by the agents.
+    NOTE on naming: the `Pn` suffix is an internal checker label, NOT the law's
+    пункт number — e.g. ART24_P3_NO_SIDE_EFFECTS maps to ч. 1 п. 8. The
+    authoritative article reference per rule is in the inline comment below (and
+    in `app.py:RULE_ARTICLE_REFS`). See `prompts/fz38_article24.md` for the text.
     """
 
     ART24_P1_MINORS = "ART24_P1_MINORS"                          # п. 1 — обращение к несовершеннолетним
@@ -60,6 +62,10 @@ class ComplianceReport(BaseModel):
     extracted_text: str
     violations: list[Violation] = Field(default_factory=list)
     rewritten_text: str | None = None
+    metadata: dict[str, str] = Field(
+        default_factory=dict,
+        description="Carried over from the parsed creative (page_count, ocr_pages, truncated, ...).",
+    )
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @property

@@ -69,7 +69,7 @@ DRUG_CLASS_LABELS: dict[str, str] = {
 
 # ─── session-state init ──────────────────────────────────────────────────────
 def _init_state() -> None:
-    defaults = {
+    defaults: dict[str, object] = {
         "creative": None,
         "report": None,
         "feedback_history": [],
@@ -77,6 +77,8 @@ def _init_state() -> None:
         "include_rewrite": True,
         "last_elapsed": None,
         "approved_path": None,
+        "running": False,
+        "run_error": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -89,6 +91,23 @@ def _reset_run_state() -> None:
     st.session_state.feedback_history = []
     st.session_state.show_refine = False
     st.session_state.approved_path = None
+
+
+def _persist_upload(data: bytes, suffix: str) -> Path:
+    """Write an uploaded file to a content-addressed temp path.
+
+    Streamlit reruns the whole script on every interaction, so a plain
+    NamedTemporaryFile(delete=False) per rerun leaks one file each time. Keying
+    the path on a content hash makes repeated reruns of the same upload reuse a
+    single file (bounded by the number of distinct uploads).
+    """
+    digest = hashlib.sha1(data).hexdigest()[:16]
+    upload_dir = Path(tempfile.gettempdir()) / "pharma_ad_uploads"
+    upload_dir.mkdir(exist_ok=True)
+    path = upload_dir / f"{digest}{suffix}"
+    if not path.exists():
+        path.write_bytes(data)
+    return path
 
 
 _init_state()
@@ -161,11 +180,9 @@ elif mode == "🖼 Баннер":
     )
     if uploaded:
         suffix = Path(uploaded.name).suffix or ".png"
-        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-        tmp.write(uploaded.read())
-        tmp.close()
-        creative = ImageCreative(image_path=Path(tmp.name))
-        st.image(tmp.name, caption=uploaded.name, width=360)
+        img_path = _persist_upload(uploaded.getvalue(), suffix)
+        creative = ImageCreative(image_path=img_path)
+        st.image(str(img_path), caption=uploaded.name, width=360)
 elif mode == "📄 PDF (статья / макет / рассылка)":
     uploaded_pdf = st.file_uploader(
         "Загрузите PDF",
@@ -178,10 +195,8 @@ elif mode == "📄 PDF (статья / макет / рассылка)":
         ),
     )
     if uploaded_pdf:
-        tmp_pdf = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-        tmp_pdf.write(uploaded_pdf.read())
-        tmp_pdf.close()
-        creative = PdfCreative(pdf_path=Path(tmp_pdf.name))
+        pdf_path = _persist_upload(uploaded_pdf.getvalue(), ".pdf")
+        creative = PdfCreative(pdf_path=pdf_path)
         st.caption(f"📎 {uploaded_pdf.name} · {uploaded_pdf.size // 1024} КБ")
 else:
     url = st.text_input(
@@ -245,20 +260,35 @@ def _run_pipeline(
 
 
 # ─── Run button ──────────────────────────────────────────────────────────────
+# A failure from the previous run is stashed in session_state and shown here so it
+# survives the rerun that re-enables the button.
+if st.session_state.run_error:
+    st.error(st.session_state.run_error)
+    st.session_state.run_error = None
+
+running = st.session_state.running
 run_clicked = st.button(
-    "▶ Запустить проверку соответствия",
+    "⏳ Идёт проверка соответствия…" if running else "▶ Запустить проверку соответствия",
     type="primary",
-    disabled=creative is None,
+    disabled=creative is None or running,
     use_container_width=True,
 )
 
-if run_clicked and creative is not None:
+# Click → flip into the running state and rerun immediately, so the button renders
+# disabled ("⏳ …") BEFORE the blocking pipeline starts (Streamlit is synchronous,
+# so without this the primary button stays lit the whole time the pipeline runs).
+if run_clicked and creative is not None and not running:
     _reset_run_state()
     st.session_state.creative = creative
+    st.session_state.running = True
+    st.rerun()
+
+# Execute on the rerun where running=True (the button above is now greyed out).
+if st.session_state.running and st.session_state.creative is not None:
     try:
-        report, elapsed = _run_pipeline(creative, feedback=[])
+        report, elapsed = _run_pipeline(st.session_state.creative, feedback=[])
     except Exception as e:  # noqa: BLE001 — surface any pipeline failure to the user
-        st.error(
+        st.session_state.run_error = (
             "❌ Не удалось получить ответ от Claude. Возможные причины: "
             "временный сбой подписки, исчерпан лимит запросов или CLI потерял "
             "авторизацию. Запустите проверку ещё раз через 30–60 секунд.\n\n"
@@ -267,6 +297,9 @@ if run_clicked and creative is not None:
     else:
         st.session_state.report = report
         st.session_state.last_elapsed = elapsed
+    finally:
+        st.session_state.running = False
+    st.rerun()
 
 
 # ─── Result rendering ────────────────────────────────────────────────────────
@@ -361,9 +394,12 @@ def _save_approved(report: ComplianceReport, feedback: list[str]) -> Path:
 
 
 # ─── If we have a report, show it ────────────────────────────────────────────
-if st.session_state.report is not None:
+if st.session_state.report is not None and not st.session_state.running:
     report = st.session_state.report
     feedback = st.session_state.feedback_history
+
+    if st.session_state.last_elapsed is not None:
+        st.success(f"✅ Проверка завершена за {st.session_state.last_elapsed:.1f} с")
 
     if feedback:
         st.caption(

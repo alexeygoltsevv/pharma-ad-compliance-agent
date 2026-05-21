@@ -13,6 +13,7 @@ from rich.table import Table
 from .pipeline import run_compliance
 from .schemas import (
     ComplianceReport,
+    Creative,
     ImageCreative,
     PdfCreative,
     Severity,
@@ -44,6 +45,7 @@ def check(
     if len(sources) != 1:
         raise typer.BadParameter("Provide exactly one of --text, --image, --url, --pdf")
 
+    creative: Creative
     if text is not None:
         creative = TextCreative(text=text, creative_id=creative_id)
     elif image is not None:
@@ -90,10 +92,19 @@ def eval(
         report = asyncio.run(run_compliance(creative, include_rewrite=False))
         found = {v.rule_id.value for v in report.violations}
         expected = set(case["expected_rule_ids"])
-        ok = expected.issubset(found)
+        # Recall: every expected rule must be found. Precision: a "clean" case
+        # (no expected rules) must produce zero findings — that is how we catch
+        # false positives, since `issubset` is trivially true for an empty set.
+        recall_ok = expected.issubset(found)
+        is_clean = not expected
+        ok = recall_ok and (not is_clean or not found)
+        unexpected = found - expected
         passed += int(ok)
         status = "[green]PASS[/green]" if ok else "[red]FAIL[/red]"
-        console.print(f"  {status} case-{i}: expected={expected}, got={found}")
+        line = f"  {status} case-{i}: expected={expected or '∅ (clean)'}, got={found or '∅'}"
+        if unexpected:
+            line += f" [yellow](extra: {unexpected})[/yellow]"
+        console.print(line)
 
     console.print(f"\n[bold]{passed}/{len(cases)} cases passed.[/bold]")
     if passed != len(cases):
