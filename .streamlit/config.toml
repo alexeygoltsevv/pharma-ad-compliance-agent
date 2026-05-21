@@ -6,3 +6,9 @@ toolbarMode = "viewer"
 
 [browser]
 gatherUsageStats = false
+
+[server]
+# Run headless: skip the first-run "enter your email" welcome prompt (which
+# blocks any non-interactive launch — make, CI, background runs) and don't try
+# to auto-open a browser.
+headless = true

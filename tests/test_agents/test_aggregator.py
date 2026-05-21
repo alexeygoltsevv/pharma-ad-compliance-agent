@@ -18,6 +18,39 @@ def test_aggregate_dedupes_same_rule_and_quote_keeping_higher_severity():
     assert out[0].severity is Severity.CRITICAL
 
 
+def test_aggregate_drops_other_when_specialized_covers_same_quote():
+    out = aggregate(
+        [
+            _v(RuleId.ART24_P1_MINORS, Severity.CRITICAL, "Рекомендуется детям"),
+            _v(RuleId.ART24_OTHER, Severity.WARNING, "рекомендуется детям"),  # case/space-insensitive
+        ]
+    )
+    assert len(out) == 1
+    assert out[0].rule_id is RuleId.ART24_P1_MINORS
+
+
+def test_aggregate_keeps_other_for_unique_quote():
+    out = aggregate(
+        [
+            _v(RuleId.ART24_P1_MINORS, Severity.CRITICAL, "Рекомендуется детям"),
+            _v(RuleId.ART24_OTHER, Severity.WARNING, "другая проблемная фраза"),
+        ]
+    )
+    rule_ids = {v.rule_id for v in out}
+    assert rule_ids == {RuleId.ART24_P1_MINORS, RuleId.ART24_OTHER}
+
+
+def test_aggregate_keeps_absence_based_other():
+    # ART24_OTHER with quote=None must not be dropped by the cross-rule pass.
+    out = aggregate(
+        [
+            _v(RuleId.ART24_P1_MINORS, Severity.CRITICAL, "детям"),
+            _v(RuleId.ART24_OTHER, Severity.WARNING, None),
+        ]
+    )
+    assert len(out) == 2
+
+
 def test_aggregate_keeps_different_quotes_separate():
     items = [
         _v(RuleId.ART24_P3_NO_SIDE_EFFECTS, Severity.CRITICAL, "не имеет побочки"),
