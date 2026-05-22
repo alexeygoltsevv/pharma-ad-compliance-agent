@@ -321,6 +321,64 @@ def _format_table_rows(report: ComplianceReport) -> list[dict[str, str]]:
     return rows
 
 
+def _render_violations_table(rows: list[dict[str, str]]) -> None:
+    from html import escape
+
+    headers = ["Исходный текст", "Compliant вариант", "Комментарий (источник)"]
+
+    def cell(text: str) -> str:
+        return escape(text).replace("  \n", "<br>").replace("\n", "<br>")
+
+    thead = "".join(f"<th>{escape(h)}</th>" for h in headers)
+    body = "".join(
+        "<tr>" + "".join(f"<td>{cell(r[h])}</td>" for h in headers) + "</tr>"
+        for r in rows
+    )
+
+    st.markdown(
+        f"""
+        <style>
+        .violations-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.92rem;
+            margin: 0.5rem 0 1rem 0;
+            table-layout: fixed;
+        }}
+        .violations-table col.col-src {{ width: 28%; }}
+        .violations-table col.col-fix {{ width: 28%; }}
+        .violations-table col.col-cmt {{ width: 44%; }}
+        .violations-table th,
+        .violations-table td {{
+            border: 1px solid rgba(128,128,128,0.25);
+            padding: 0.6rem 0.75rem;
+            vertical-align: top;
+            text-align: left;
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+            line-height: 1.45;
+        }}
+        .violations-table th {{
+            background: rgba(128,128,128,0.10);
+            font-weight: 600;
+        }}
+        .violations-table tr:nth-child(even) td {{
+            background: rgba(128,128,128,0.04);
+        }}
+        </style>
+        <table class="violations-table">
+          <colgroup>
+            <col class="col-src"><col class="col-fix"><col class="col-cmt">
+          </colgroup>
+          <thead><tr>{thead}</tr></thead>
+          <tbody>{body}</tbody>
+        </table>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _format_plain_text_report(report: ComplianceReport, feedback: list[str]) -> str:
     """Простой text-формат для копирования в буфер.
 
@@ -474,16 +532,7 @@ if st.session_state.report is not None and not st.session_state.running:
             "кнопку «Скопировать весь отчёт» ниже."
         )
         rows = _format_table_rows(report)
-        st.dataframe(
-            rows,
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "Исходный текст": st.column_config.TextColumn(width="medium"),
-                "Compliant вариант": st.column_config.TextColumn(width="medium"),
-                "Комментарий (источник)": st.column_config.TextColumn(width="large"),
-            },
-        )
+        _render_violations_table(rows)
     else:
         st.info("Нарушений не найдено — таблица пустая.")
 
