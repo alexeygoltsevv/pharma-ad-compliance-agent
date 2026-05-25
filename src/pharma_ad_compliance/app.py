@@ -19,6 +19,7 @@ from pharma_ad_compliance.schemas import (
     Creative,
     ImageCreative,
     PdfCreative,
+    RewriteVariant,
     Severity,
     TextCreative,
     UrlCreative,
@@ -508,6 +509,103 @@ def _save_approved(report: ComplianceReport, feedback: list[str]) -> Path:
     return out_path
 
 
+# ─── Rewrite-variant rendering helpers ───────────────────────────────────────
+# Russian-language labels for the three editor framings. Centralised so the
+# CLI / Streamlit / future UIs render the same wording.
+_FRAME_LABELS: dict[str, str] = {
+    "mechanism": "Mechanism (механизм)",
+    "jtbd": "JTBD (ситуация)",
+    "benefit": "Benefit (результат)",
+}
+
+
+def _score_badge(total: int) -> str:
+    """Color-coded badge for a rewrite quality score (0-100)."""
+    if total >= 70:
+        return f"🟢 📊 {total}/100"
+    if total >= 50:
+        return f"🟡 📊 {total}/100"
+    return f"🔴 📊 {total}/100"
+
+
+def _render_one_variant(variant: RewriteVariant, idx: int) -> None:
+    score = variant.quality_score
+    if score is not None:
+        badge_col, _ = st.columns([1, 4])
+        with badge_col:
+            st.markdown(f"### {_score_badge(score.total)}")
+        sub = " · ".join(
+            f"{name}: {value}/20"
+            for name, value in score.breakdown.items()
+        )
+        st.caption(sub)
+        if score.notes:
+            st.caption(f"📝 {score.notes}")
+    else:
+        st.caption("📊 Оценка качества недоступна (сбой scoring-пасса).")
+
+    if variant.compliance_passed:
+        st.success("✅ Прошёл compliance-проверку")
+    else:
+        n = len(variant.recheck_violations)
+        st.warning(f"⚠️ {n} остаточн{'ое' if n == 1 else ('ых' if 2 <= n <= 4 else 'ых')} нарушение(й) после переписки")
+
+    with st.container(border=True):
+        st.write(variant.text)
+
+    if not variant.compliance_passed and variant.recheck_violations:
+        with st.expander(f"Остаточные нарушения ({len(variant.recheck_violations)})", expanded=False):
+            for rv in variant.recheck_violations:
+                st.markdown(
+                    f"**[{rv.severity.value}] {RULE_LABELS.get(rv.rule_id.value, rv.rule_id.value)}**"
+                )
+                if rv.quote:
+                    st.markdown(f"> «{rv.quote}»")
+                st.write(rv.explanation)
+
+    # Per-variant feedback / accept controls — reuse the existing feedback flow.
+    with st.expander("💬 Комментарий по этому варианту", expanded=False):
+        with st.form(f"variant_feedback_{idx}", clear_on_submit=True):
+            comment = st.text_area(
+                "Что доработать в этом варианте?",
+                height=100,
+                key=f"variant_feedback_text_{idx}",
+            )
+            submitted = st.form_submit_button("Применить ко всему пайплайну")
+        if submitted:
+            text_clean = (comment or "").strip()
+            if not text_clean:
+                st.warning("Комментарий пустой — напишите, что нужно учесть.")
+            else:
+                tagged = f"[вариант {variant.frame}-led] {text_clean}"
+                st.session_state.feedback_history.append(tagged)
+                st.session_state.show_refine = False
+                try:
+                    report2, elapsed2 = _run_pipeline(
+                        st.session_state.creative,
+                        feedback=st.session_state.feedback_history,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    st.session_state.feedback_history.pop()
+                    st.error(
+                        "❌ Перезапуск с комментарием не удался. "
+                        f"`{type(e).__name__}: {e}`"
+                    )
+                else:
+                    st.session_state.report = report2
+                    st.session_state.last_elapsed = elapsed2
+                    st.rerun()
+
+
+def _render_rewrite_variant_tabs(report: ComplianceReport) -> None:
+    """Render mechanism / jtbd / benefit tabs for the rewrite variants."""
+    tab_labels = [_FRAME_LABELS.get(v.frame, v.frame) for v in report.rewrite_variants]
+    tabs = st.tabs(tab_labels)
+    for tab, (idx, variant) in zip(tabs, enumerate(report.rewrite_variants), strict=True):
+        with tab:
+            _render_one_variant(variant, idx)
+
+
 # ─── If we have a report, show it ────────────────────────────────────────────
 if st.session_state.report is not None and not st.session_state.running:
     report = st.session_state.report
@@ -593,8 +691,18 @@ if st.session_state.report is not None and not st.session_state.running:
     else:
         st.info("Нарушений не найдено — таблица пустая.")
 
-    # Compliant rewrite (full text)
-    if report.rewritten_text:
+    # Compliant rewrite — multi-variant view (mechanism / jtbd / benefit) when
+    # the editor ran, with quality-score badges and per-variant recheck status.
+    # Falls back to the legacy single rewritten_text panel for old/imported
+    # reports where rewrite_variants is empty but rewritten_text is set.
+    if report.rewrite_variants:
+        st.subheader("✍️ Compliant-переписанные варианты")
+        st.caption(
+            "Три рамки одной и той же compliant-переписки. Сравните и выберите "
+            "ту, что лучше соответствует tone-of-voice бренда."
+        )
+        _render_rewrite_variant_tabs(report)
+    elif report.rewritten_text:
         st.subheader("✍️ Compliant-переписанный вариант (целиком)")
         with st.container(border=True):
             st.write(report.rewritten_text)

@@ -11,6 +11,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .agents._llm import LLMOutputError, LLMUnavailableError
+from .agents.editor_agent import DEFAULT_FRAMES
 from .pipeline import run_compliance
 from .schemas import (
     ComplianceReport,
@@ -39,6 +40,16 @@ def check(
     pdf: Path | None = typer.Option(None, "--pdf", help="Path to a PDF (article, landing/email mockup)"),
     creative_id: str | None = typer.Option(None, "--id", help="Optional identifier for the creative"),
     no_rewrite: bool = typer.Option(False, "--no-rewrite", help="Skip the editor agent"),
+    variants: int = typer.Option(
+        3,
+        "--variants",
+        min=1,
+        max=3,
+        help=(
+            "How many framing variants to generate (1-3). "
+            "1=mechanism only, 2=+jtbd, 3=all three (mechanism, jtbd, benefit)."
+        ),
+    ),
     out: Path | None = typer.Option(None, "--out", help="Write the report to this path (JSON)"),
 ):
     """Run the compliance pipeline against a single creative."""
@@ -56,7 +67,16 @@ def check(
     else:
         creative = UrlCreative(url=url, creative_id=creative_id)  # type: ignore[arg-type]
 
-    report = asyncio.run(run_compliance(creative, include_rewrite=not no_rewrite))
+    # Subset of the editor's default frame order — keeps the same naming so
+    # downstream consumers don't have to track separate enum orderings.
+    frames = DEFAULT_FRAMES[:variants]
+    report = asyncio.run(
+        run_compliance(
+            creative,
+            include_rewrite=not no_rewrite,
+            rewrite_frames=frames,
+        )
+    )
     _render(report)
 
     if out:
@@ -159,7 +179,23 @@ def _render(report: ComplianceReport) -> None:
             )
         console.print(table)
 
-    if report.rewritten_text:
+    # Prefer the per-variant view when available; fall back to the legacy
+    # single rewritten_text field for backwards-compat (--no-rewrite, etc.).
+    if report.rewrite_variants:
+        for variant in report.rewrite_variants:
+            score = (
+                f" · {variant.quality_score.total}/100"
+                if variant.quality_score is not None
+                else ""
+            )
+            status = (
+                "[green]compliance OK[/green]"
+                if variant.compliance_passed
+                else f"[red]{len(variant.recheck_violations)} residual issue(s)[/red]"
+            )
+            title = f"Rewrite — {variant.frame}-led{score} · {status}"
+            console.print(Panel(variant.text, title=title, expand=False))
+    elif report.rewritten_text:
         console.print(Panel(report.rewritten_text, title="Rewritten (compliant)", expand=False))
 
 

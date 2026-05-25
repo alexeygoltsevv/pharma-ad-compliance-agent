@@ -1,13 +1,16 @@
 """Editor — rewrites the creative to address every flagged violation.
 
-Skips the LLM call entirely when there are no violations.
+Skips the LLM call entirely when there are no violations. Produces up to
+three frame-tagged variants (mechanism / jtbd / benefit) in parallel so the
+brand-manager can pick the angle that fits.
 """
 from __future__ import annotations
 
+import asyncio
 from string import Template
 
 from ..rag import get_article24_text
-from ..schemas import DrugClass, ParsedCreative, Violation
+from ..schemas import DrugClass, ParsedCreative, RewriteFrame, Violation
 from ._llm import HAIKU_MODEL, run_text
 
 # Переписывание текста по заданным правкам не требует сложного рассуждения — Haiku справляется
@@ -81,15 +84,37 @@ $law_text
 """)
 
 
-async def rewrite(
+# Frame-specific instruction paragraphs appended to the editor's system prompt.
+# Each variant keeps the same legal constraints but reorders the message so the
+# brand-manager can pick the angle that best fits their voice.
+_FRAME_INSTRUCTIONS: dict[RewriteFrame, str] = {
+    "mechanism": (
+        "Этот вариант — MECHANISM-LED: начни с описания механизма действия "
+        "препарата («способствует уменьшению…», «облегчает…», «снижает…»). "
+        "Польза подаётся через физиологию, не через обещание."
+    ),
+    "jtbd": (
+        "Этот вариант — JTBD-LED: начни с ситуации использования («при первых "
+        "признаках простуды», «после физической нагрузки»). Польза подаётся "
+        "через job-to-be-done — когда и зачем брать."
+    ),
+    "benefit": (
+        "Этот вариант — BENEFIT-LED: начни с ощутимого результата для "
+        "пользователя в рамках закона («дышите свободнее», «снимите боль за…»). "
+        "Польза подаётся через outcome, но без запрещённых гарантий."
+    ),
+}
+
+DEFAULT_FRAMES: tuple[RewriteFrame, ...] = ("mechanism", "jtbd", "benefit")
+
+
+def _build_user_prompt(
     *,
     parsed: ParsedCreative,
     drug_class: DrugClass,
     violations: list[Violation],
-    user_feedback: list[str] | None = None,
-) -> str | None:
-    if not violations:
-        return None
+    user_feedback: list[str] | None,
+) -> str:
     violations_block = "\n".join(
         f"- [{v.severity.value}] {v.rule_id.value}: {v.explanation}"
         + (f" Цитата: «{v.quote}»" if v.quote else "")
@@ -111,11 +136,89 @@ async def rewrite(
             "\n\nТворческое направление от пользователя (применяй как направление, "
             "но НЕ нарушай юридические ограничения):\n" + feedback_block
         )
+    return prompt
+
+
+def _build_system_prompt(frame: RewriteFrame) -> str:
     # `safe_substitute` avoids the silent-substitution / KeyError risk of plain
     # `str.replace` or `str.format` when the law text itself contains `{...}` or
     # `$` characters.
+    base = _SYSTEM_PROMPT.safe_substitute(law_text=get_article24_text())
+    frame_block = _FRAME_INSTRUCTIONS[frame]
+    return f"{base}\nРАМКА ЭТОГО ВАРИАНТА:\n{frame_block}\n"
+
+
+async def _rewrite_single(
+    *,
+    frame: RewriteFrame,
+    parsed: ParsedCreative,
+    drug_class: DrugClass,
+    violations: list[Violation],
+    user_feedback: list[str] | None = None,
+) -> str:
+    """Run one rewrite pass for a single frame. Caller guarantees `violations` is non-empty."""
+    prompt = _build_user_prompt(
+        parsed=parsed,
+        drug_class=drug_class,
+        violations=violations,
+        user_feedback=user_feedback,
+    )
     return await run_text(
         prompt=prompt,
-        system_prompt=_SYSTEM_PROMPT.safe_substitute(law_text=get_article24_text()),
+        system_prompt=_build_system_prompt(frame),
         model=_MODEL,
+    )
+
+
+async def rewrite_variants(
+    *,
+    parsed: ParsedCreative,
+    drug_class: DrugClass,
+    violations: list[Violation],
+    user_feedback: list[str] | None = None,
+    frames: tuple[RewriteFrame, ...] = DEFAULT_FRAMES,
+) -> list[tuple[str, RewriteFrame]]:
+    """Generate multiple frame-tagged compliant rewrites in parallel.
+
+    Returns `[(text, frame), ...]` in the same order as `frames`. Empty list
+    when there are no violations to fix (caller skips the editor stage entirely
+    in that case). The shared `_llm` semaphore caps concurrent CLI subprocesses,
+    so passing all three frames at once just adds them to the wave.
+    """
+    if not violations or not frames:
+        return []
+    coros = [
+        _rewrite_single(
+            frame=f,
+            parsed=parsed,
+            drug_class=drug_class,
+            violations=violations,
+            user_feedback=user_feedback,
+        )
+        for f in frames
+    ]
+    texts = await asyncio.gather(*coros)
+    return list(zip(texts, frames, strict=True))
+
+
+async def rewrite(
+    *,
+    parsed: ParsedCreative,
+    drug_class: DrugClass,
+    violations: list[Violation],
+    user_feedback: list[str] | None = None,
+    frames: tuple[RewriteFrame, ...] = DEFAULT_FRAMES,
+) -> list[tuple[str, RewriteFrame]]:
+    """Public entry point — alias for `rewrite_variants` returning all variants.
+
+    NOTE: This used to return `str | None` (a single rewrite). It now returns a
+    list of `(text, frame)` pairs — callers must adapt. The pipeline does, and
+    the CLI/Streamlit are updated in lockstep.
+    """
+    return await rewrite_variants(
+        parsed=parsed,
+        drug_class=drug_class,
+        violations=violations,
+        user_feedback=user_feedback,
+        frames=frames,
     )

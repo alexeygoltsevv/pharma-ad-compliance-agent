@@ -7,7 +7,16 @@ from .creative import (
     TextCreative,
     UrlCreative,
 )
-from .violation import CaseRef, ComplianceReport, RuleId, Severity, Violation
+from .violation import (
+    CaseRef,
+    ComplianceReport,
+    RewriteFrame,
+    RewriteScore,
+    RewriteVariant,
+    RuleId,
+    Severity,
+    Violation,
+)
 
 __all__ = [
     "CaseRef",
@@ -19,6 +28,9 @@ __all__ = [
     "TextCreative",
     "UrlCreative",
     "ComplianceReport",
+    "RewriteFrame",
+    "RewriteScore",
+    "RewriteVariant",
     "RuleId",
     "Severity",
     "Violation",

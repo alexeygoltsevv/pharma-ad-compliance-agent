@@ -12,6 +12,8 @@ from pharma_ad_compliance.schemas import (
     DrugClass,
     ImageCreative,
     PdfCreative,
+    RewriteScore,
+    RewriteVariant,
     RuleId,
     Severity,
     TextCreative,
@@ -252,3 +254,219 @@ def test_violation_precedents_roundtrip():
     restored = Violation.model_validate_json(v.model_dump_json())
     assert len(restored.precedents) == 1
     assert restored.precedents[0] == ref
+
+
+# ─── RewriteScore / RewriteVariant / report auto-populate ────────────────────
+
+
+def _valid_breakdown(total: int = 80) -> dict[str, int]:
+    base, rem = divmod(total, 5)
+    return {
+        "concreteness": base + (1 if rem > 0 else 0),
+        "mechanism": base + (1 if rem > 1 else 0),
+        "jtbd": base + (1 if rem > 2 else 0),
+        "voice_and_structure": base + (1 if rem > 3 else 0),
+        "register": base,
+    }
+
+
+def test_rewrite_score_happy_path():
+    bd = _valid_breakdown(80)
+    score = RewriteScore(total=sum(bd.values()), breakdown=bd, notes="ok")
+    assert score.total == 80
+    assert set(score.breakdown.keys()) == {
+        "concreteness", "mechanism", "jtbd", "voice_and_structure", "register"
+    }
+
+
+def test_rewrite_score_rejects_total_sum_mismatch():
+    bd = _valid_breakdown(60)
+    with pytest.raises(ValidationError):
+        RewriteScore(total=90, breakdown=bd, notes="")  # 60 != 90
+
+
+def test_rewrite_score_rejects_missing_key():
+    bd = _valid_breakdown(60)
+    bd.pop("register")
+    with pytest.raises(ValidationError):
+        RewriteScore(total=sum(bd.values()), breakdown=bd, notes="")
+
+
+def test_rewrite_score_rejects_extra_key():
+    bd = _valid_breakdown(60)
+    bd["extra_key"] = 5
+    with pytest.raises(ValidationError):
+        RewriteScore(total=sum(bd.values()), breakdown=bd, notes="")
+
+
+def test_rewrite_score_rejects_out_of_range_subscore():
+    bd = _valid_breakdown(60)
+    bd["concreteness"] = 25  # > 20
+    with pytest.raises(ValidationError):
+        RewriteScore(total=sum(bd.values()), breakdown=bd, notes="")
+
+
+def test_rewrite_score_rejects_negative_subscore():
+    bd = _valid_breakdown(60)
+    bd["jtbd"] = -1
+    with pytest.raises(ValidationError):
+        RewriteScore(total=sum(bd.values()), breakdown=bd, notes="")
+
+
+def test_rewrite_score_is_frozen():
+    bd = _valid_breakdown(50)
+    score = RewriteScore(total=sum(bd.values()), breakdown=bd, notes="")
+    with pytest.raises(ValidationError):
+        score.total = 10  # type: ignore[misc]
+
+
+def test_rewrite_variant_roundtrip():
+    bd = _valid_breakdown(70)
+    score = RewriteScore(total=sum(bd.values()), breakdown=bd, notes="solid")
+    variant = RewriteVariant(
+        text="Переписанный текст",
+        frame="mechanism",
+        compliance_passed=True,
+        recheck_violations=(),
+        quality_score=score,
+    )
+    restored = RewriteVariant.model_validate_json(variant.model_dump_json())
+    assert restored == variant
+    assert restored.quality_score is not None
+    assert restored.quality_score.total == 70
+
+
+def test_rewrite_variant_with_recheck_violations_roundtrip():
+    rv = Violation(
+        rule_id=RuleId.ART24_OTHER,
+        severity=Severity.WARNING,
+        explanation="осталась мелочь",
+    )
+    variant = RewriteVariant(
+        text="x",
+        frame="jtbd",
+        compliance_passed=False,
+        recheck_violations=(rv,),
+    )
+    restored = RewriteVariant.model_validate_json(variant.model_dump_json())
+    assert restored.compliance_passed is False
+    assert len(restored.recheck_violations) == 1
+    assert restored.recheck_violations[0].rule_id is RuleId.ART24_OTHER
+
+
+def test_rewrite_variant_rejects_unknown_frame():
+    with pytest.raises(ValidationError):
+        RewriteVariant(text="x", frame="random-frame", compliance_passed=True)  # type: ignore[arg-type]
+
+
+def test_compliance_report_autopopulates_rewritten_text_from_best_variant():
+    """Best = compliance_passed first, then highest quality_score.total."""
+    low_bd = _valid_breakdown(40)
+    high_bd = _valid_breakdown(85)
+    low = RewriteVariant(
+        text="LOW quality, passed",
+        frame="mechanism",
+        compliance_passed=True,
+        quality_score=RewriteScore(total=40, breakdown=low_bd, notes=""),
+    )
+    high_failed = RewriteVariant(
+        text="HIGH quality but failed",
+        frame="jtbd",
+        compliance_passed=False,
+        recheck_violations=(
+            Violation(
+                rule_id=RuleId.ART24_OTHER,
+                severity=Severity.WARNING,
+                explanation="x",
+            ),
+        ),
+        quality_score=RewriteScore(total=85, breakdown=high_bd, notes=""),
+    )
+    report = ComplianceReport(
+        source_kind="text",
+        drug_class=DrugClass.OTC,
+        extracted_text="...",
+        rewrite_variants=(low, high_failed),
+    )
+    # Passing variant wins over failed-with-higher-score one.
+    assert report.rewritten_text == "LOW quality, passed"
+
+
+def test_compliance_report_autopopulate_uses_highest_score_among_passers():
+    mid = RewriteVariant(
+        text="MID",
+        frame="mechanism",
+        compliance_passed=True,
+        quality_score=RewriteScore(
+            total=sum(_valid_breakdown(60).values()),
+            breakdown=_valid_breakdown(60),
+            notes="",
+        ),
+    )
+    top = RewriteVariant(
+        text="TOP",
+        frame="jtbd",
+        compliance_passed=True,
+        quality_score=RewriteScore(
+            total=sum(_valid_breakdown(90).values()),
+            breakdown=_valid_breakdown(90),
+            notes="",
+        ),
+    )
+    report = ComplianceReport(
+        source_kind="text",
+        drug_class=DrugClass.OTC,
+        extracted_text="...",
+        rewrite_variants=(mid, top),
+    )
+    assert report.rewritten_text == "TOP"
+
+
+def test_compliance_report_does_not_overwrite_explicit_rewritten_text():
+    bd = _valid_breakdown(80)
+    variant = RewriteVariant(
+        text="auto-populated",
+        frame="mechanism",
+        compliance_passed=True,
+        quality_score=RewriteScore(total=sum(bd.values()), breakdown=bd, notes=""),
+    )
+    report = ComplianceReport(
+        source_kind="text",
+        drug_class=DrugClass.OTC,
+        extracted_text="...",
+        rewritten_text="manually set",
+        rewrite_variants=(variant,),
+    )
+    assert report.rewritten_text == "manually set"
+
+
+def test_compliance_report_with_no_variants_keeps_rewritten_text_none():
+    report = ComplianceReport(
+        source_kind="text",
+        drug_class=DrugClass.OTC,
+        extracted_text="...",
+        rewrite_variants=(),
+    )
+    assert report.rewritten_text is None
+
+
+def test_compliance_report_rewrite_variants_roundtrip():
+    bd = _valid_breakdown(75)
+    variant = RewriteVariant(
+        text="x",
+        frame="benefit",
+        compliance_passed=True,
+        quality_score=RewriteScore(total=sum(bd.values()), breakdown=bd, notes="ok"),
+    )
+    report = ComplianceReport(
+        source_kind="text",
+        drug_class=DrugClass.OTC,
+        extracted_text="...",
+        rewrite_variants=(variant,),
+    )
+    restored = ComplianceReport.model_validate_json(report.model_dump_json())
+    assert len(restored.rewrite_variants) == 1
+    assert restored.rewrite_variants[0].frame == "benefit"
+    assert restored.rewrite_variants[0].quality_score is not None
+    assert restored.rewrite_variants[0].quality_score.total == 75
+    assert restored.rewritten_text == "x"

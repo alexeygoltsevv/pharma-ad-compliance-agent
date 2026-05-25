@@ -4,9 +4,23 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .creative import DrugClass
+
+# Three editorial framings the multi-variant rewriter targets. Each frame keeps
+# the same compliance constraints but rearranges the message so reviewers can
+# pick the angle that best fits their brand voice.
+RewriteFrame = Literal["mechanism", "jtbd", "benefit"]
+
+# Required keys for the 5-criterion rewrite-quality rubric (0-20 each).
+_REWRITE_SCORE_KEYS: tuple[str, ...] = (
+    "concreteness",
+    "mechanism",
+    "jtbd",
+    "voice_and_structure",
+    "register",
+)
 
 
 class Severity(str, Enum):
@@ -100,6 +114,72 @@ class Violation(BaseModel):
     )
 
 
+class RewriteScore(BaseModel):
+    """5-criterion 0-100 quality score for a single rewrite variant.
+
+    Each criterion is graded 0-20 by a separate Haiku pass; `total` is the
+    arithmetic sum and is validated against `breakdown.values()` so the model
+    cannot return an inconsistent rollup.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    total: int = Field(..., ge=0, le=100)
+    breakdown: dict[str, int] = Field(
+        ...,
+        description=(
+            "Per-criterion scores keyed by: "
+            "concreteness, mechanism, jtbd, voice_and_structure, register. "
+            "Each value is in 0..20."
+        ),
+    )
+    notes: str = Field(
+        default="",
+        description="Free-form 1-2 sentence justification in Russian.",
+    )
+
+    @model_validator(mode="after")
+    def _check_breakdown(self) -> RewriteScore:
+        keys = set(self.breakdown.keys())
+        expected = set(_REWRITE_SCORE_KEYS)
+        if keys != expected:
+            missing = expected - keys
+            extra = keys - expected
+            raise ValueError(
+                f"breakdown must have exactly keys {sorted(expected)}; "
+                f"missing={sorted(missing)}, extra={sorted(extra)}"
+            )
+        for name, value in self.breakdown.items():
+            if not isinstance(value, int) or not (0 <= value <= 20):
+                raise ValueError(
+                    f"breakdown[{name!r}] must be int in 0..20, got {value!r}"
+                )
+        expected_total = sum(self.breakdown.values())
+        if self.total != expected_total:
+            raise ValueError(
+                f"total={self.total} must equal sum(breakdown.values())={expected_total}"
+            )
+        return self
+
+
+class RewriteVariant(BaseModel):
+    """One of the multi-frame compliant rewrites returned by the editor.
+
+    `recheck_violations` is a tuple (not a list) so the model stays hashable —
+    consistent with `Violation.precedents` — and `quality_score` is optional
+    because scoring is best-effort (a failed Haiku call must not crash the
+    whole report).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str
+    frame: RewriteFrame
+    compliance_passed: bool
+    recheck_violations: tuple[Violation, ...] = ()
+    quality_score: RewriteScore | None = None
+
+
 class ComplianceReport(BaseModel):
     model_config = ConfigDict()
 
@@ -108,7 +188,19 @@ class ComplianceReport(BaseModel):
     drug_class: DrugClass
     extracted_text: str
     violations: list[Violation] = Field(default_factory=list)
+    # DEPRECATED — kept for backwards-compat with existing CLI / JSON consumers.
+    # Auto-populated from the best-scoring `rewrite_variants` entry by the
+    # `_populate_best_rewrite` model_validator below; new code should read
+    # `rewrite_variants` directly so it can show the user all three framings.
     rewritten_text: str | None = None
+    rewrite_variants: tuple[RewriteVariant, ...] = Field(
+        default_factory=tuple,
+        description=(
+            "Multi-frame compliant rewrites (mechanism / jtbd / benefit). "
+            "Empty when the editor was skipped (--no-rewrite) or when there "
+            "were no violations to fix."
+        ),
+    )
     metadata: dict[str, str] = Field(
         default_factory=dict,
         description="Carried over from the parsed creative (page_count, ocr_pages, truncated, ...).",
@@ -118,6 +210,32 @@ class ComplianceReport(BaseModel):
     # can store lists/structured info without breaking the parser's contract.
     diagnostics: dict[str, Any] = Field(default_factory=dict)
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def _populate_best_rewrite(self) -> ComplianceReport:
+        """Backfill `rewritten_text` from the best-scoring variant.
+
+        Priority for picking "best":
+        1. variants that passed compliance recheck over those that didn't;
+        2. higher `quality_score.total` over lower (unscored treated as 0);
+        3. earlier frame in the editor's natural order (mechanism, jtbd, benefit).
+
+        Only fires when `rewritten_text` is None and there is at least one
+        variant — never overwrites an explicitly-set value.
+        """
+        if self.rewritten_text is None and self.rewrite_variants:
+            best = max(
+                enumerate(self.rewrite_variants),
+                key=lambda iv: (
+                    1 if iv[1].compliance_passed else 0,
+                    iv[1].quality_score.total if iv[1].quality_score else -1,
+                    -iv[0],  # tie-break: earlier index wins
+                ),
+            )[1]
+            # ComplianceReport is not frozen and validate_assignment is off, so
+            # this neither triggers re-validation nor recursion into us.
+            self.rewritten_text = best.text
+        return self
 
     @property
     def is_compliant(self) -> bool:
