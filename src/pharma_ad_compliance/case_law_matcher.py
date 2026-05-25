@@ -387,7 +387,9 @@ def enrich_with_precedents(
             )
             refs = []
         if refs:
-            out.append(v.model_copy(update={"precedents": refs}))
+            # Cast to tuple so the frozen Violation's tuple[CaseRef, ...] field
+            # serializes cleanly (Pydantic otherwise warns about list vs tuple).
+            out.append(v.model_copy(update={"precedents": tuple(refs)}))
         else:
             out.append(v)
     return out

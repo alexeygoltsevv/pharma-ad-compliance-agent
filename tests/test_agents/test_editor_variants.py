@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from pharma_ad_compliance.agents import editor_agent
+from pharma_ad_compliance.agents.editor_agent import _extract_creative
 from pharma_ad_compliance.schemas import (
     DrugClass,
     ParsedCreative,
@@ -257,3 +258,44 @@ async def test_pipeline_respects_include_rewrite_false(monkeypatch, _pipeline_st
     report = await run_compliance(creative, include_rewrite=False)
     assert report.rewrite_variants == ()
     assert report.rewritten_text is None
+
+
+# ─── _extract_creative — output-marker unwrap & fallback ─────────────────────
+def test_extract_creative_unwraps_simple_tags() -> None:
+    raw = "<creative>Чистый текст рекламы.</creative>"
+    assert _extract_creative(raw) == "Чистый текст рекламы."
+
+
+def test_extract_creative_strips_meta_prose_around_tags() -> None:
+    raw = (
+        "Я работаю как фарма-копирайтер. Вот результат:\n\n"
+        "<creative>Препарат облегчает дыхание. Имеются противопоказания.</creative>\n\n"
+        "**Обоснование:** заменил гарантию на механизм."
+    )
+    got = _extract_creative(raw)
+    assert got == "Препарат облегчает дыхание. Имеются противопоказания."
+    assert "Я работаю" not in got
+    assert "Обоснование" not in got
+
+
+def test_extract_creative_handles_multiline_body() -> None:
+    raw = (
+        "<creative>\nПрепарат, 200 мг, 10 таблеток.\n\n"
+        "Способствует уменьшению боли при первых признаках.\n\n"
+        "Имеются противопоказания, проконсультируйтесь со специалистом.\n</creative>"
+    )
+    got = _extract_creative(raw)
+    assert got.startswith("Препарат, 200 мг")
+    assert "Имеются противопоказания" in got
+    assert "<creative>" not in got
+
+
+def test_extract_creative_falls_back_when_markers_missing() -> None:
+    raw = "Препарат хорошо переносится. Имеются противопоказания."
+    # No <creative> tags — caller gets the raw text (logged as a warning).
+    assert _extract_creative(raw) == raw
+
+
+def test_extract_creative_case_insensitive_tags() -> None:
+    raw = "<CREATIVE>Текст</CREATIVE>"
+    assert _extract_creative(raw) == "Текст"
