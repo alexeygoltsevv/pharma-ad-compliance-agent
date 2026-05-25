@@ -18,6 +18,7 @@ env/
 # Environment
 .env
 .env.local
+claude-auth.env
 
 # Streamlit
 .streamlit/secrets.toml

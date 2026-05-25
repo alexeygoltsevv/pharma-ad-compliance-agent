@@ -1,0 +1,14 @@
+services:
+  pharma-claude:
+    build: .
+    image: pharma-ad-compliance-claude:latest
+    container_name: pharma-claude
+    ports:
+      - "127.0.0.1:8502:8501"
+    env_file:
+      - claude-auth.env
+    environment:
+      PHARMA_AD_MODEL: "claude-sonnet-4-6"
+    volumes:
+      - ./case_law/approved_reports:/app/case_law/approved_reports
+    restart: unless-stopped
