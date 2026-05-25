@@ -12,6 +12,7 @@ import base64
 import json
 import logging
 import os
+import random
 import re
 import time
 from collections.abc import AsyncIterator
@@ -24,6 +25,7 @@ from claude_agent_sdk import (
     CLIJSONDecodeError,
     CLINotFoundError,
     ProcessError,
+    ResultMessage,
     TextBlock,
     ThinkingBlock,
     ThinkingConfigDisabled,
@@ -39,6 +41,9 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 DEFAULT_MODEL = os.environ.get("PHARMA_AD_MODEL", "claude-sonnet-4-6")
+# Shared Haiku constant for fast, mechanical tasks (classifier, editor rewrite).
+# ~3x faster than Sonnet with no quality loss on extract/classify/rewrite work.
+HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -90,6 +95,11 @@ _RETRY_INITIAL_DELAY = 1.5  # seconds; doubles on each retry
 _LLM_TIMEOUT = float(os.environ.get("PHARMA_AD_LLM_TIMEOUT", "120"))
 
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", re.DOTALL)
+
+# Latched after we've logged the "no prompt caching observed" hint at most once
+# per process — without this, every checker call in a clean cache state would
+# spam the same INFO line.
+_PROMPT_CACHE_WARNED = False
 
 
 class LLMOutputError(RuntimeError):
@@ -155,10 +165,15 @@ def _build_user_message(text: str, images: list[ImageInput]) -> dict[str, Any]:
 
 async def _consume_query(
     prompt: str | AsyncIterator[dict[str, Any]], options: ClaudeAgentOptions
-) -> tuple[str, bool]:
-    """Drain a single-turn query into (concatenated_text, saw_thinking)."""
+) -> tuple[str, bool, dict[str, Any] | None]:
+    """Drain a single-turn query into (concatenated_text, saw_thinking, usage_dict).
+
+    `usage_dict` is the raw `ResultMessage.usage` dict (or None if the SDK didn't
+    emit one) — used by the caller for observability only; never required.
+    """
     chunks: list[str] = []
     saw_thinking = False
+    usage: dict[str, Any] | None = None
     async for msg in query(prompt=prompt, options=options):
         if isinstance(msg, AssistantMessage):
             for block in msg.content:
@@ -166,7 +181,14 @@ async def _consume_query(
                     chunks.append(block.text)
                 elif isinstance(block, ThinkingBlock):
                     saw_thinking = True
-    return "".join(chunks).strip(), saw_thinking
+        elif isinstance(msg, ResultMessage):
+            # Defensive: SDK shape may shift; never let observability break a call.
+            try:
+                if msg.usage is not None:
+                    usage = msg.usage
+            except (AttributeError, KeyError):
+                usage = None
+    return "".join(chunks).strip(), saw_thinking, usage
 
 
 async def _collect_text(
@@ -226,22 +248,25 @@ async def _collect_text(
                 # Semaphore wait is outside wait_for, so a queued call isn't charged
                 # the timeout — only actual model time is.
                 started = time.perf_counter()
-                text, saw_thinking = await asyncio.wait_for(
+                text, saw_thinking, usage = await asyncio.wait_for(
                     _consume_query(_make_prompt(), options), timeout=_LLM_TIMEOUT
                 )
-                if _TIMING:
-                    logger.info(
-                        "llm call: model=%s elapsed=%.1fs thinking=%s out_chars=%d",
-                        resolved_model,
-                        time.perf_counter() - started,
-                        saw_thinking,
-                        len(text),
-                    )
+                elapsed = time.perf_counter() - started
+                _log_call_observability(
+                    resolved_model=resolved_model,
+                    elapsed=elapsed,
+                    saw_thinking=saw_thinking,
+                    out_chars=len(text),
+                    usage=usage,
+                    has_system_prompt=bool(system_prompt),
+                )
                 return text
         except Exception as e:  # noqa: BLE001 — SDK raises bare Exception
             last_exc = e
             if attempt < _MAX_RETRIES and _is_transient_sdk_error(e):
-                delay = _RETRY_INITIAL_DELAY * (2**attempt)
+                # Exponential backoff + small uniform jitter so a wave of 6
+                # parallel retries doesn't lockstep into the CLI all at once.
+                delay = _RETRY_INITIAL_DELAY * (2**attempt) + random.uniform(0, 0.5)
                 logger.warning(
                     "Transient Claude SDK error (attempt %s/%s): %s — retrying in %.1fs",
                     attempt + 1,
@@ -258,11 +283,65 @@ async def _collect_text(
     ) from last_exc
 
 
+def _log_call_observability(
+    *,
+    resolved_model: str,
+    elapsed: float,
+    saw_thinking: bool,
+    out_chars: int,
+    usage: dict[str, Any] | None,
+    has_system_prompt: bool,
+) -> None:
+    """Log per-call timing + token usage. Defensive — never raises."""
+    global _PROMPT_CACHE_WARNED
+    try:
+        in_tokens = (usage or {}).get("input_tokens")
+        out_tokens = (usage or {}).get("output_tokens")
+        cache_read = (usage or {}).get("cache_read_input_tokens")
+        cache_create = (usage or {}).get("cache_creation_input_tokens")
+    except (AttributeError, KeyError):
+        in_tokens = out_tokens = cache_read = cache_create = None
+
+    # Promote to INFO when cache_read is observed so it stands out; otherwise
+    # respect the existing PHARMA_AD_TIMING gate.
+    cache_hit = isinstance(cache_read, int) and cache_read > 0
+    if _TIMING or cache_hit:
+        logger.info(
+            "llm call: model=%s elapsed=%.1fs thinking=%s out_chars=%d "
+            "in=%s out=%s cache_read=%s cache_create=%s",
+            resolved_model,
+            elapsed,
+            saw_thinking,
+            out_chars,
+            in_tokens,
+            out_tokens,
+            cache_read,
+            cache_create,
+        )
+
+    # One-shot hint when we have a non-empty system prompt but never see a cache
+    # hit — likely means the static prompt isn't being cached (too short, or
+    # changing on every call). Cheap signal, no auto-fix.
+    if (
+        not _PROMPT_CACHE_WARNED
+        and has_system_prompt
+        and isinstance(cache_read, int)
+        and cache_read == 0
+    ):
+        logger.info(
+            "no prompt caching observed; consider trimming static system prompt "
+            "or checking PHARMA_AD_THINKING / model settings"
+        )
+        _PROMPT_CACHE_WARNED = True
+
+
 def _extract_json(raw: str) -> str:
     """Pull the first JSON object/array out of free-form model output.
 
     Models sometimes wrap JSON in ```json ... ``` fences or prefix it with prose.
     We try fenced blocks first, then fall back to the first balanced { ... } / [ ... ].
+    Raises LLMOutputError with a self-describing message if no JSON span is found —
+    that's clearer than letting the caller chase a downstream JSONDecodeError.
     """
     fenced = _JSON_BLOCK_RE.search(raw)
     if fenced:
@@ -281,7 +360,9 @@ def _extract_json(raw: str) -> str:
                 depth -= 1
                 if depth == 0:
                     return raw[start : i + 1]
-    return raw  # Let json.loads fail with a useful error.
+    raise LLMOutputError(
+        f"no JSON object or array found in model output: {raw[:200]!r}"
+    )
 
 
 async def run_json(
@@ -293,12 +374,15 @@ async def run_json(
     images: list[ImageInput] | None = None,
 ) -> T:
     """Call Claude, parse the response as JSON, validate against `schema`."""
+    # Skip model_json_schema() unless the CLI's structured-output path is on —
+    # otherwise the schema is computed only to be discarded inside _collect_text.
+    output_schema = schema.model_json_schema() if _JSON_SCHEMA_ENABLED else None
     raw = await _collect_text(
         prompt=prompt,
         system_prompt=system_prompt,
         model=model,
         images=images,
-        output_schema=schema.model_json_schema(),
+        output_schema=output_schema,
     )
     payload = _extract_json(raw)
     try:

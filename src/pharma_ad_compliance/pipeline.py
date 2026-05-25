@@ -14,7 +14,7 @@ from .agents import (
 )
 from .agents._llm import _TIMING
 from .agents.rule_checkers import ALL_CHECKERS
-from .schemas import ComplianceReport, Creative
+from .schemas import ComplianceReport, Creative, Violation
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +51,26 @@ async def run_compliance(
         checker(parsed, drug_class, user_feedback=user_feedback) for checker in ALL_CHECKERS
     ]
     with _stage("checkers"):
-        chunked_violations = await asyncio.gather(*checker_runs)
-    flat = [v for chunk in chunked_violations for v in chunk]
+        # return_exceptions=True so a single checker crashing (transient LLM error,
+        # bad JSON, etc.) doesn't abort the whole report — partial results are
+        # more useful to the reviewer than nothing. We surface which checkers
+        # failed via ComplianceReport.diagnostics for the UI to warn on.
+        results = await asyncio.gather(*checker_runs, return_exceptions=True)
+    flat: list[Violation] = []
+    failed_checkers: list[str] = []
+    for checker, res in zip(ALL_CHECKERS, results, strict=True):
+        if isinstance(res, BaseException):
+            logger.error("checker %s failed: %s", checker.__qualname__, res)
+            failed_checkers.append(checker.__module__.rsplit(".", 1)[-1])
+        else:
+            flat.extend(res)
+    if failed_checkers:
+        logger.info(
+            "checkers stage: %d/%d failed (partial results): %s",
+            len(failed_checkers),
+            len(ALL_CHECKERS),
+            ", ".join(failed_checkers),
+        )
     violations = aggregator_agent.aggregate(flat)
 
     with _stage("editor"):
@@ -67,6 +85,10 @@ async def run_compliance(
             else None
         )
 
+    diagnostics: dict[str, object] = {}
+    if failed_checkers:
+        diagnostics["failed_checkers"] = failed_checkers
+
     return ComplianceReport(
         creative_id=parsed.creative_id,
         source_kind=parsed.source_kind,
@@ -75,4 +97,5 @@ async def run_compliance(
         violations=violations,
         rewritten_text=rewritten,
         metadata=parsed.metadata,
+        diagnostics=diagnostics,
     )

@@ -65,8 +65,8 @@ def check(
         console.print(f"\n[dim]Saved JSON to {out}[/dim]")
 
 
-@app.command()
-def eval(
+@app.command("eval")
+def eval_cmd(
     dataset: Path = typer.Option(
         Path("case_law/regression_dataset"),
         "--dataset",

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import tempfile
 import time
 from datetime import UTC, datetime
@@ -24,10 +25,19 @@ from pharma_ad_compliance.schemas import (
 )
 
 # Папка-база знаний для одобренных пользователем отчётов.
-_APPROVED_REPORTS_DIR = Path(__file__).resolve().parents[2].parent / "case_law" / "approved_reports"
-# Если запущено из dev-checkout, путь выше указывает на репо. Иначе создаём в cwd/case_law/.
-if not _APPROVED_REPORTS_DIR.parent.exists():
-    _APPROVED_REPORTS_DIR = Path.cwd() / "case_law" / "approved_reports"
+# Resolution order (first match wins):
+#   1. PHARMA_AD_APPROVED_DIR env var — explicit override (Docker, sandbox).
+#   2. <repo>/case_law/approved_reports/ — dev-checkout default.
+#   3. <cwd>/case_law/approved_reports/ — packaged install / arbitrary working dir.
+_env_dir = os.environ.get("PHARMA_AD_APPROVED_DIR", "").strip()
+if _env_dir:
+    _APPROVED_REPORTS_DIR = Path(_env_dir)
+else:
+    _APPROVED_REPORTS_DIR = (
+        Path(__file__).resolve().parents[2].parent / "case_law" / "approved_reports"
+    )
+    if not _APPROVED_REPORTS_DIR.parent.exists():
+        _APPROVED_REPORTS_DIR = Path.cwd() / "case_law" / "approved_reports"
 
 RULE_LABELS: dict[str, str] = {
     "ART24_P1_MINORS": "Обращение к несовершеннолетним",
@@ -100,7 +110,19 @@ def _persist_upload(data: bytes, suffix: str) -> Path:
     NamedTemporaryFile(delete=False) per rerun leaks one file each time. Keying
     the path on a content hash makes repeated reruns of the same upload reuse a
     single file (bounded by the number of distinct uploads).
+
+    Raises ValueError if the upload exceeds the parser's file-size cap — we want
+    to fail loudly *before* writing 100 MB to /tmp, not after.
     """
+    # Pragmatic private import — the parser owns this constant and the security
+    # agent may rename it; if so, update both sides in one pass.
+    from pharma_ad_compliance.agents.parser_agent import _MAX_FILE_BYTES
+
+    if len(data) > _MAX_FILE_BYTES:
+        raise ValueError(
+            f"upload too large: {len(data)} bytes "
+            f"(cap {_MAX_FILE_BYTES} = {_MAX_FILE_BYTES // (1024 * 1024)} МБ)"
+        )
     digest = hashlib.sha1(data).hexdigest()[:16]
     upload_dir = Path(tempfile.gettempdir()) / "pharma_ad_uploads"
     upload_dir.mkdir(exist_ok=True)
@@ -180,9 +202,13 @@ elif mode == "🖼 Баннер":
     )
     if uploaded:
         suffix = Path(uploaded.name).suffix or ".png"
-        img_path = _persist_upload(uploaded.getvalue(), suffix)
-        creative = ImageCreative(image_path=img_path)
-        st.image(str(img_path), caption=uploaded.name, width=360)
+        try:
+            img_path = _persist_upload(uploaded.getvalue(), suffix)
+        except ValueError as e:
+            st.error(f"❌ Файл слишком большой: {e}")
+        else:
+            creative = ImageCreative(image_path=img_path)
+            st.image(str(img_path), caption=uploaded.name, width=360)
 elif mode == "📄 PDF (статья / макет / рассылка)":
     uploaded_pdf = st.file_uploader(
         "Загрузите PDF",
@@ -195,9 +221,13 @@ elif mode == "📄 PDF (статья / макет / рассылка)":
         ),
     )
     if uploaded_pdf:
-        pdf_path = _persist_upload(uploaded_pdf.getvalue(), ".pdf")
-        creative = PdfCreative(pdf_path=pdf_path)
-        st.caption(f"📎 {uploaded_pdf.name} · {uploaded_pdf.size // 1024} КБ")
+        try:
+            pdf_path = _persist_upload(uploaded_pdf.getvalue(), ".pdf")
+        except ValueError as e:
+            st.error(f"❌ PDF слишком большой: {e}")
+        else:
+            creative = PdfCreative(pdf_path=pdf_path)
+            st.caption(f"📎 {uploaded_pdf.name} · {uploaded_pdf.size // 1024} КБ")
 else:
     url = st.text_input(
         "Ссылка на лендинг или страницу с рекламой",

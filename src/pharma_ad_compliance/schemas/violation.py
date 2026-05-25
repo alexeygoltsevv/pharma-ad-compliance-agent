@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,12 +30,12 @@ class RuleId(str, Enum):
     in `app.py:RULE_ARTICLE_REFS`). See `prompts/fz38_article24.md` for the text.
     """
 
-    ART24_P1_MINORS = "ART24_P1_MINORS"                          # п. 1 — обращение к несовершеннолетним
-    ART24_P2_SPECIFIC_CASES = "ART24_P2_SPECIFIC_CASES"          # п. 2 — ссылки на конкретные случаи излечения
-    ART24_P3_NO_SIDE_EFFECTS = "ART24_P3_NO_SIDE_EFFECTS"        # п. 6 — утверждение об отсутствии побочки
-    ART24_P4_DOCTOR_RECOMMENDATION = "ART24_P4_DOCTOR_RECOMMENDATION"  # п. 4 — представление в виде рекомендации врача/фармацевта
-    ART24_P5_MANDATORY_DISCLAIMER = "ART24_P5_MANDATORY_DISCLAIMER"    # ч. 7 — обязательное предупреждение
-    ART24_OTHER = "ART24_OTHER"                                  # прочие нарушения ст. 24
+    ART24_P1_MINORS = "ART24_P1_MINORS"                          # ч. 1 п. 1 — «обращаться к несовершеннолетним»
+    ART24_P2_SPECIFIC_CASES = "ART24_P2_SPECIFIC_CASES"          # ч. 1 п. 2 — «содержать ссылки на конкретные случаи излечения»
+    ART24_P3_NO_SIDE_EFFECTS = "ART24_P3_NO_SIDE_EFFECTS"        # ч. 1 п. 8 — «гарантировать положительное действие, безопасность, эффективность и отсутствие побочных действий» (имя `P3` — внутренний legacy-лейбл, не номер пункта закона)
+    ART24_P4_DOCTOR_RECOMMENDATION = "ART24_P4_DOCTOR_RECOMMENDATION"  # ложная экспертная рекомендация (врач/фармацевт/актёр в халате) — собирательный чекер на стыке ч. 1 п. 4 и ст. 5 ФЗ-38; буквальный п. 4 («ссылка на факт исследований при госрегистрации») вынесен в ART24_OTHER
+    ART24_P5_MANDATORY_DISCLAIMER = "ART24_P5_MANDATORY_DISCLAIMER"    # ч. 7 — обязательное предупреждение «Имеются противопоказания, проконсультируйтесь со специалистом»
+    ART24_OTHER = "ART24_OTHER"                                  # подпункты ч. 1, не покрытые отдельными чекерами: п. 3 (благодарность), п. 4 (ссылка на исследования при регистрации), п. 5 (навязывание диагноза), п. 6 (необходимость у здорового), п. 7 (ненужность врача), п. 9 (БАД ↔ ЛС), п. 10 (безопасность через «естественное происхождение»)
 
 
 class Violation(BaseModel):
@@ -66,6 +67,10 @@ class ComplianceReport(BaseModel):
         default_factory=dict,
         description="Carried over from the parsed creative (page_count, ocr_pages, truncated, ...).",
     )
+    # Loosely-typed dict for pipeline-level diagnostics (e.g. failed_checkers).
+    # Separate from `metadata` (which is str→str, carried from the parser) so we
+    # can store lists/structured info without breaking the parser's contract.
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
     generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @property
