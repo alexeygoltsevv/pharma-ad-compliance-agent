@@ -14,6 +14,13 @@ import streamlit as st
 from pydantic import ValidationError
 
 from pharma_ad_compliance.pipeline import run_compliance
+from pharma_ad_compliance.renderers import (
+    DRUG_CLASS_LABELS,
+    RULE_ARTICLE_REFS,
+    RULE_LABELS,
+    render_legal_view,
+    render_marketer_view,
+)
 from pharma_ad_compliance.schemas import (
     ComplianceReport,
     Creative,
@@ -23,7 +30,6 @@ from pharma_ad_compliance.schemas import (
     Severity,
     TextCreative,
     UrlCreative,
-    Violation,
 )
 
 # Папка-база знаний для одобренных пользователем отчётов.
@@ -41,42 +47,9 @@ else:
     if not _APPROVED_REPORTS_DIR.parent.exists():
         _APPROVED_REPORTS_DIR = Path.cwd() / "case_law" / "approved_reports"
 
-RULE_LABELS: dict[str, str] = {
-    "ART24_P1_MINORS": "Обращение к несовершеннолетним",
-    "ART24_P2_SPECIFIC_CASES": "Ссылки на конкретные случаи излечения",
-    "ART24_P3_NO_SIDE_EFFECTS": "Гарантия безопасности / отсутствия побочки",
-    "ART24_P4_DOCTOR_RECOMMENDATION": "Псевдо-рекомендация врача / фармацевта",
-    "ART24_P5_MANDATORY_DISCLAIMER": "Отсутствует обязательное предупреждение",
-    "ART24_OTHER": "Прочие нарушения ст. 24",
-}
-
-RULE_ARTICLE_REFS: dict[str, str] = {
-    "ART24_P1_MINORS": "ст. 24 ч. 1 п. 1",
-    "ART24_P2_SPECIFIC_CASES": "ст. 24 ч. 1 п. 2",
-    "ART24_P3_NO_SIDE_EFFECTS": "ст. 24 ч. 1 п. 8",
-    "ART24_P4_DOCTOR_RECOMMENDATION": "ст. 24 ч. 1 п. 4",
-    "ART24_P5_MANDATORY_DISCLAIMER": "ст. 24 ч. 7",
-    "ART24_OTHER": "ст. 24 (различные подпункты)",
-}
-
-SEVERITY_LABELS: dict[Severity, tuple[str, str]] = {
-    Severity.CRITICAL: ("🔴 КРИТИЧНО", "Блокирует запуск — ФАС с высокой вероятностью оштрафует."),
-    Severity.WARNING: ("🟡 ПРЕДУПРЕЖДЕНИЕ", "Рискованная формулировка — требуется юридическая проверка."),
-    Severity.RECOMMENDATION: ("🔵 РЕКОМЕНДАЦИЯ", "Стилистическая правка на усмотрение автора."),
-}
-
-SEVERITY_BADGE: dict[Severity, str] = {
-    Severity.CRITICAL: "🔴",
-    Severity.WARNING: "🟡",
-    Severity.RECOMMENDATION: "🔵",
-}
-
-DRUG_CLASS_LABELS: dict[str, str] = {
-    "RX": "Рецептурный (Rx)",
-    "OTC": "Безрецептурный (OTC)",
-    "BAD": "БАД",
-    "UNKNOWN": "Не определена",
-}
+# Static label tables live in `pharma_ad_compliance.renderers._shared`. They are
+# re-exported from the package above so the sidebar and plain-text-report code
+# below stays identical without owning a second copy.
 
 
 # ─── session-state init ──────────────────────────────────────────────────────
@@ -335,106 +308,11 @@ if st.session_state.running and st.session_state.creative is not None:
 
 
 # ─── Result rendering ────────────────────────────────────────────────────────
-def _format_precedents_line(v: Violation) -> str | None:
-    """Render CRITICAL violation precedents as a compact one-liner.
-
-    Example: "⚖️ Похожие дела: Канефрон Н 2020 (200 000 ₽); Артра 2024"
-    Returns None when there are no precedents (most violations) or for
-    non-CRITICAL severity (the matcher only enriches CRITICAL by default).
-    """
-    if not v.precedents:
-        return None
-    pieces: list[str] = []
-    for ref in v.precedents[:3]:
-        year = ref.date.split("-", 1)[0] if ref.date else ""
-        label = f"{ref.party} {year}".strip()
-        if ref.fine_rub:
-            # Pretty-print fine with thin-space thousands grouping.
-            fine_fmt = f"{ref.fine_rub:,}".replace(",", " ")
-            label += f" ({fine_fmt} ₽)"
-        pieces.append(label)
-    return "⚖️ Похожие дела: " + "; ".join(pieces)
-
-
-def _format_table_rows(report: ComplianceReport) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
-    for v in report.violations:
-        comment_parts = [
-            f"{SEVERITY_BADGE[v.severity]} {RULE_LABELS.get(v.rule_id.value, v.rule_id.value)}",
-            f"📖 {RULE_ARTICLE_REFS.get(v.rule_id.value, '')} ФЗ-38",
-            v.explanation,
-        ]
-        if v.intent_hypothesis:
-            comment_parts.append(f"🧠 Замысел бренда: {v.intent_hypothesis}")
-        precedents_line = _format_precedents_line(v)
-        if precedents_line:
-            comment_parts.append(precedents_line)
-        rows.append(
-            {
-                "Исходный текст": v.quote or "(отсутствует в креативе)",
-                "Compliant вариант": v.suggested_fix or "—",
-                "Комментарий (источник)": "  \n".join(part for part in comment_parts if part),
-            }
-        )
-    return rows
-
-
-def _render_violations_table(rows: list[dict[str, str]]) -> None:
-    from html import escape
-
-    headers = ["Исходный текст", "Compliant вариант", "Комментарий (источник)"]
-
-    def cell(text: str) -> str:
-        return escape(text).replace("  \n", "<br>").replace("\n", "<br>")
-
-    thead = "".join(f"<th>{escape(h)}</th>" for h in headers)
-    body = "".join(
-        "<tr>" + "".join(f"<td>{cell(r[h])}</td>" for h in headers) + "</tr>"
-        for r in rows
-    )
-
-    st.markdown(
-        f"""
-        <style>
-        .violations-table {{
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.92rem;
-            margin: 0.5rem 0 1rem 0;
-            table-layout: fixed;
-        }}
-        .violations-table col.col-src {{ width: 28%; }}
-        .violations-table col.col-fix {{ width: 28%; }}
-        .violations-table col.col-cmt {{ width: 44%; }}
-        .violations-table th,
-        .violations-table td {{
-            border: 1px solid rgba(128,128,128,0.25);
-            padding: 0.6rem 0.75rem;
-            vertical-align: top;
-            text-align: left;
-            white-space: pre-wrap;
-            word-break: break-word;
-            overflow-wrap: anywhere;
-            line-height: 1.45;
-        }}
-        .violations-table th {{
-            background: rgba(128,128,128,0.10);
-            font-weight: 600;
-        }}
-        .violations-table tr:nth-child(even) td {{
-            background: rgba(128,128,128,0.04);
-        }}
-        </style>
-        <table class="violations-table">
-          <colgroup>
-            <col class="col-src"><col class="col-fix"><col class="col-cmt">
-          </colgroup>
-          <thead><tr>{thead}</tr></thead>
-          <tbody>{body}</tbody>
-        </table>
-        """,
-        unsafe_allow_html=True,
-    )
+# Layout/formatting helpers (table HTML, precedent lines, rewrite-variant tabs)
+# live in `pharma_ad_compliance.renderers`. `app.py` now only owns:
+#   • the plain-text report (clipboard copy);
+#   • the approved-report writer (`_save_approved`);
+#   • the persona switcher and orchestration around the persona views.
 
 
 def _format_plain_text_report(report: ComplianceReport, feedback: list[str]) -> str:
@@ -509,101 +387,31 @@ def _save_approved(report: ComplianceReport, feedback: list[str]) -> Path:
     return out_path
 
 
-# ─── Rewrite-variant rendering helpers ───────────────────────────────────────
-# Russian-language labels for the three editor framings. Centralised so the
-# CLI / Streamlit / future UIs render the same wording.
-_FRAME_LABELS: dict[str, str] = {
-    "mechanism": "Mechanism (механизм)",
-    "jtbd": "JTBD (ситуация)",
-    "benefit": "Benefit (результат)",
-}
+def _on_variant_feedback(variant: RewriteVariant, comment_text: str) -> None:
+    """Per-variant feedback handler passed to the marketer view.
 
-
-def _score_badge(total: int) -> str:
-    """Color-coded badge for a rewrite quality score (0-100)."""
-    if total >= 70:
-        return f"🟢 📊 {total}/100"
-    if total >= 50:
-        return f"🟡 📊 {total}/100"
-    return f"🔴 📊 {total}/100"
-
-
-def _render_one_variant(variant: RewriteVariant, idx: int) -> None:
-    score = variant.quality_score
-    if score is not None:
-        badge_col, _ = st.columns([1, 4])
-        with badge_col:
-            st.markdown(f"### {_score_badge(score.total)}")
-        sub = " · ".join(
-            f"{name}: {value}/20"
-            for name, value in score.breakdown.items()
+    Appends `[вариант <frame>-led] <comment>` to feedback_history, re-runs the
+    pipeline, and rolls back on failure so the user can retry without
+    duplicating the same comment.
+    """
+    tagged = f"[вариант {variant.frame}-led] {comment_text}"
+    st.session_state.feedback_history.append(tagged)
+    st.session_state.show_refine = False
+    try:
+        report2, elapsed2 = _run_pipeline(
+            st.session_state.creative,
+            feedback=st.session_state.feedback_history,
         )
-        st.caption(sub)
-        if score.notes:
-            st.caption(f"📝 {score.notes}")
+    except Exception as e:  # noqa: BLE001
+        st.session_state.feedback_history.pop()
+        st.error(
+            "❌ Перезапуск с комментарием не удался. "
+            f"`{type(e).__name__}: {e}`"
+        )
     else:
-        st.caption("📊 Оценка качества недоступна (сбой scoring-пасса).")
-
-    if variant.compliance_passed:
-        st.success("✅ Прошёл compliance-проверку")
-    else:
-        n = len(variant.recheck_violations)
-        st.warning(f"⚠️ {n} остаточн{'ое' if n == 1 else ('ых' if 2 <= n <= 4 else 'ых')} нарушение(й) после переписки")
-
-    with st.container(border=True):
-        st.write(variant.text)
-
-    if not variant.compliance_passed and variant.recheck_violations:
-        with st.expander(f"Остаточные нарушения ({len(variant.recheck_violations)})", expanded=False):
-            for rv in variant.recheck_violations:
-                st.markdown(
-                    f"**[{rv.severity.value}] {RULE_LABELS.get(rv.rule_id.value, rv.rule_id.value)}**"
-                )
-                if rv.quote:
-                    st.markdown(f"> «{rv.quote}»")
-                st.write(rv.explanation)
-
-    # Per-variant feedback / accept controls — reuse the existing feedback flow.
-    with st.expander("💬 Комментарий по этому варианту", expanded=False):
-        with st.form(f"variant_feedback_{idx}", clear_on_submit=True):
-            comment = st.text_area(
-                "Что доработать в этом варианте?",
-                height=100,
-                key=f"variant_feedback_text_{idx}",
-            )
-            submitted = st.form_submit_button("Применить ко всему пайплайну")
-        if submitted:
-            text_clean = (comment or "").strip()
-            if not text_clean:
-                st.warning("Комментарий пустой — напишите, что нужно учесть.")
-            else:
-                tagged = f"[вариант {variant.frame}-led] {text_clean}"
-                st.session_state.feedback_history.append(tagged)
-                st.session_state.show_refine = False
-                try:
-                    report2, elapsed2 = _run_pipeline(
-                        st.session_state.creative,
-                        feedback=st.session_state.feedback_history,
-                    )
-                except Exception as e:  # noqa: BLE001
-                    st.session_state.feedback_history.pop()
-                    st.error(
-                        "❌ Перезапуск с комментарием не удался. "
-                        f"`{type(e).__name__}: {e}`"
-                    )
-                else:
-                    st.session_state.report = report2
-                    st.session_state.last_elapsed = elapsed2
-                    st.rerun()
-
-
-def _render_rewrite_variant_tabs(report: ComplianceReport) -> None:
-    """Render mechanism / jtbd / benefit tabs for the rewrite variants."""
-    tab_labels = [_FRAME_LABELS.get(v.frame, v.frame) for v in report.rewrite_variants]
-    tabs = st.tabs(tab_labels)
-    for tab, (idx, variant) in zip(tabs, enumerate(report.rewrite_variants), strict=True):
-        with tab:
-            _render_one_variant(variant, idx)
+        st.session_state.report = report2
+        st.session_state.last_elapsed = elapsed2
+        st.rerun()
 
 
 # ─── If we have a report, show it ────────────────────────────────────────────
@@ -678,34 +486,24 @@ if st.session_state.report is not None and not st.session_state.running:
             )
         st.write(report.extracted_text)
 
-    # ── Main result: table ───────────────────────────────────────────────────
-    if report.violations:
-        st.subheader("📋 Разбор нарушений")
-        st.caption(
-            "Сравнение по каждому проблемному фрагменту: что было → как исправить → "
-            "ссылка на закон. **Скопируйте отдельные ячейки** мышью или нажмите "
-            "кнопку «Скопировать весь отчёт» ниже."
-        )
-        rows = _format_table_rows(report)
-        _render_violations_table(rows)
-    else:
-        st.info("Нарушений не найдено — таблица пустая.")
+    # ── Persona switcher ─────────────────────────────────────────────────────
+    # Same ComplianceReport, two different layouts. Persisted in
+    # session_state["persona_view"] so toggling doesn't lose feedback state.
+    persona = st.radio(
+        "Кто смотрит отчёт?",
+        ["👨‍⚖️ Юрист", "🎯 Бренд-менеджер"],
+        horizontal=True,
+        key="persona_view",
+        help=(
+            "Юрист: фокус на тяжести нарушений и прецедентах ФАС. "
+            "Бренд-менеджер: фокус на готовых вариантах переписки."
+        ),
+    )
 
-    # Compliant rewrite — multi-variant view (mechanism / jtbd / benefit) when
-    # the editor ran, with quality-score badges and per-variant recheck status.
-    # Falls back to the legacy single rewritten_text panel for old/imported
-    # reports where rewrite_variants is empty but rewritten_text is set.
-    if report.rewrite_variants:
-        st.subheader("✍️ Compliant-переписанные варианты")
-        st.caption(
-            "Три рамки одной и той же compliant-переписки. Сравните и выберите "
-            "ту, что лучше соответствует tone-of-voice бренда."
-        )
-        _render_rewrite_variant_tabs(report)
-    elif report.rewritten_text:
-        st.subheader("✍️ Compliant-переписанный вариант (целиком)")
-        with st.container(border=True):
-            st.write(report.rewritten_text)
+    if persona == "👨‍⚖️ Юрист":
+        render_legal_view(report)
+    else:
+        render_marketer_view(report, on_variant_feedback=_on_variant_feedback)
 
     # User feedback history
     if feedback:
