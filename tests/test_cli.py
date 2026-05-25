@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,6 +16,17 @@ from pharma_ad_compliance.schemas import (
     RewriteScore,
     RewriteVariant,
 )
+
+# Typer's Rich-formatted --help can split flags with ANSI sequences
+# (e.g. "--variants" → "-" + ESC[...] + "-variants"), which breaks naive
+# substring asserts on result.stdout. Local terminals where Rich detects
+# no TTY may skip coloring entirely; CI runners typically do not. Strip
+# ANSI before substring checks so the tests behave the same in both.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def _plain(s: str) -> str:
+    return _ANSI_RE.sub("", s)
 
 
 def _fake_report() -> ComplianceReport:
@@ -70,14 +82,16 @@ def runner() -> CliRunner:
 def test_root_help(runner: CliRunner) -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    assert "compliance" in result.stdout.lower() or "usage" in result.stdout.lower()
+    out = _plain(result.stdout).lower()
+    assert "compliance" in out or "usage" in out
 
 
 def test_check_help_lists_input_options(runner: CliRunner) -> None:
     result = runner.invoke(app, ["check", "--help"])
     assert result.exit_code == 0
+    out = _plain(result.stdout)
     for flag in ("--text", "--image", "--url", "--pdf"):
-        assert flag in result.stdout
+        assert flag in out
 
 
 def test_check_with_no_input_fails(runner: CliRunner) -> None:
@@ -120,13 +134,13 @@ def test_check_with_text_invokes_pipeline_and_writes_out(
 def test_eval_help(runner: CliRunner) -> None:
     result = runner.invoke(app, ["eval", "--help"])
     assert result.exit_code == 0
-    assert "dataset" in result.stdout.lower()
+    assert "dataset" in _plain(result.stdout).lower()
 
 
 def test_check_help_lists_variants_option(runner: CliRunner) -> None:
     result = runner.invoke(app, ["check", "--help"])
     assert result.exit_code == 0
-    assert "--variants" in result.stdout
+    assert "--variants" in _plain(result.stdout)
 
 
 def test_check_with_variants_1_passes_single_frame(
