@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from .agents._llm import LLMOutputError, LLMUnavailableError
 from .pipeline import run_compliance
 from .schemas import (
     ComplianceReport,
@@ -87,9 +88,18 @@ def eval(
 
     console.print(f"Loaded {len(cases)} regression cases from {len(files)} file(s).")
     passed = 0
+    errored = 0
     for i, case in enumerate(cases, 1):
         creative = TextCreative(text=case["input"], creative_id=case.get("id", f"case-{i}"))
-        report = asyncio.run(run_compliance(creative, include_rewrite=False))
+        try:
+            report = asyncio.run(run_compliance(creative, include_rewrite=False))
+        except (LLMUnavailableError, LLMOutputError) as e:
+            errored += 1
+            console.print(
+                f"  [magenta]ERROR[/magenta] case-{i}: pipeline aborted — "
+                f"{type(e).__name__}: {e}"
+            )
+            continue
         found = {v.rule_id.value for v in report.violations}
         expected = set(case["expected_rule_ids"])
         # Recall: every expected rule must be found. Precision: a "clean" case
@@ -106,7 +116,11 @@ def eval(
             line += f" [yellow](extra: {unexpected})[/yellow]"
         console.print(line)
 
-    console.print(f"\n[bold]{passed}/{len(cases)} cases passed.[/bold]")
+    summary = f"\n[bold]{passed}/{len(cases)} cases passed"
+    if errored:
+        summary += f", {errored} errored (infrastructure)"
+    summary += ".[/bold]"
+    console.print(summary)
     if passed != len(cases):
         raise typer.Exit(code=1)
 

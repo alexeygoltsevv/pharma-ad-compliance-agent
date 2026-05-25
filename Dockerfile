@@ -25,6 +25,13 @@ COPY .streamlit ./.streamlit
 
 RUN pip install --no-cache-dir --no-deps -e .
 
+# Non-root user: the `claude` CLI refuses --dangerously-skip-permissions
+# (the SDK's permission_mode="bypassPermissions") when run as root, which
+# breaks every agent LLM call. Streamlit serves fine on port 8501 as non-root.
+RUN useradd --create-home --shell /bin/bash --uid 1000 app && \
+    chown -R app:app /app
+USER app
+
 EXPOSE 8501
 
 CMD ["streamlit", "run", "src/pharma_ad_compliance/app.py", \
