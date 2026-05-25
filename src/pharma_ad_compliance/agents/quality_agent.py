@@ -8,13 +8,18 @@ None and never aborts the report.
 from __future__ import annotations
 
 import json
+import logging
+import re
 from functools import cache
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 
 from ..schemas import RewriteScore
 from ._llm import HAIKU_MODEL, LLMOutputError, _collect_text, _extract_json
+
+logger = logging.getLogger(__name__)
 
 _MODEL = HAIKU_MODEL
 
@@ -34,6 +39,20 @@ def _rubric_prompt() -> str:
 # chars per side is plenty of signal.
 _MAX_CHARS_PER_SIDE = 6000
 
+# Required breakdown keys, in the same order Pydantic validates them.
+_BREAKDOWN_KEYS = ("concreteness", "mechanism", "jtbd", "voice_and_structure", "register")
+_SCORE_MIN = 0
+_SCORE_MAX = 20
+_NOTES_MAX_CHARS = 500
+
+# Pulls content between <score>...</score> tags. Mirrors the editor's
+# <creative>...</creative> contract so the model has a single, unambiguous
+# output shape across both agents.
+_SCORE_TAG_RE = re.compile(
+    r"<\s*score\s*>(.*?)<\s*/\s*score\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+
 
 def _truncate(text: str) -> str:
     if len(text) <= _MAX_CHARS_PER_SIDE:
@@ -41,12 +60,73 @@ def _truncate(text: str) -> str:
     return text[:_MAX_CHARS_PER_SIDE] + "\n\n[...текст обрезан для оценки...]"
 
 
+def _unwrap_score(raw: str) -> str:
+    """Return the JSON body — content between <score>...</score> tags if present,
+    else fall back to _extract_json so we still salvage clean payloads from
+    models that ignored the wrapping contract.
+    """
+    match = _SCORE_TAG_RE.search(raw)
+    if match:
+        return match.group(1).strip()
+    logger.warning(
+        "quality_agent: response missing <score> markers (len=%d); falling back to JSON extractor",
+        len(raw),
+    )
+    return _extract_json(raw)
+
+
+def _coerce_int_score(value: Any) -> int:
+    """Best-effort coerce a single breakdown value to an int in [0, 20]."""
+    if isinstance(value, bool):  # bool subclasses int — reject explicitly
+        return 0
+    if isinstance(value, int):
+        n = value
+    elif isinstance(value, float):
+        n = round(value)
+    elif isinstance(value, str):
+        try:
+            n = round(float(value.strip()))
+        except (ValueError, TypeError):
+            return 0
+    else:
+        return 0
+    return max(_SCORE_MIN, min(_SCORE_MAX, n))
+
+
+def _normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a model-emitted payload into a shape `RewriteScore` will accept.
+
+    The model frequently gets arithmetic wrong (`total` ≠ sum), adds an extra
+    `summary` key, omits one of the 5 breakdown keys, or returns scores as
+    strings. We salvage what we can:
+      - drop unknown top-level keys
+      - fill missing breakdown keys with 0
+      - clamp each breakdown value into [0, 20]
+      - recompute `total` from the normalized breakdown (ignore model's `total`)
+      - truncate `notes` to 500 chars, default ""
+    """
+    raw_breakdown = payload.get("breakdown")
+    if not isinstance(raw_breakdown, dict):
+        raw_breakdown = {}
+    breakdown: dict[str, int] = {
+        key: _coerce_int_score(raw_breakdown.get(key, 0)) for key in _BREAKDOWN_KEYS
+    }
+    total = sum(breakdown.values())
+    notes_raw = payload.get("notes")
+    if not isinstance(notes_raw, str):
+        notes_raw = ""
+    notes = notes_raw.strip()[:_NOTES_MAX_CHARS]
+    return {"total": total, "breakdown": breakdown, "notes": notes}
+
+
 async def score_rewrite(original: str, rewrite: str, frame: str) -> RewriteScore:
     """Score one rewrite variant against the 5-criterion rubric.
 
-    Raises `LLMOutputError` if the model output cannot be parsed or violates the
-    `RewriteScore` invariants (sum of breakdown ≠ total, wrong keys, etc.). The
-    pipeline catches and downgrades this to `quality_score=None` per variant.
+    Best-effort: model output is normalized (auto-recomputes `total`, clamps
+    out-of-range subscores, fills missing keys with 0) before validation. Only
+    raises `LLMOutputError` when the output is so malformed we can't extract
+    JSON at all. The pipeline catches and downgrades that to
+    `quality_score=None` for that variant.
     """
     prompt = (
         f"Рамка переписки: `{frame}`\n\n"
@@ -58,16 +138,21 @@ async def score_rewrite(original: str, rewrite: str, frame: str) -> RewriteScore
         system_prompt=_rubric_prompt(),
         model=_MODEL,
     )
-    payload = _extract_json(raw)
+    body = _unwrap_score(raw)
     try:
-        data = json.loads(payload)
+        data = json.loads(body)
     except json.JSONDecodeError as e:
         raise LLMOutputError(
             f"quality_agent: invalid JSON from model:\n{raw[:500]}"
         ) from e
-    try:
-        return RewriteScore.model_validate(data)
-    except ValidationError as e:
+    if not isinstance(data, dict):
         raise LLMOutputError(
-            f"quality_agent: payload did not match RewriteScore: {e}\nRaw: {raw[:500]}"
+            f"quality_agent: payload is not a JSON object: {type(data).__name__}"
+        )
+    normalized = _normalize_payload(data)
+    try:
+        return RewriteScore.model_validate(normalized)
+    except ValidationError as e:  # pragma: no cover — normalization should prevent
+        raise LLMOutputError(
+            f"quality_agent: normalized payload still invalid: {e}\nRaw: {raw[:500]}"
         ) from e
