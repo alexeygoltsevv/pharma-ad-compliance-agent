@@ -1,3 +1,14 @@
+---
+case_id: 2024-05-07-nizhfarm-artra
+date: 2024-05-07
+party: АО «Нижфарм»
+product: Артра
+rule_ids: [ART24_OTHER, ART24_P3_NO_SIDE_EFFECTS, ART24_P5_MANDATORY_DISCLAIMER]
+fine_rub: null
+url: https://remedium.ru/news/fas-priznala-ao-nizhfarm-narush/
+short_quote: "Боль и дискомфорт в суставах сообщают о первых признаках заболевания. Артра эффективно восстанавливает хрящевую ткань — действие гарантировано"
+---
+
 # 2024-05-07 — АО «Нижфарм» / Артра
 
 **Источник (permalink):** https://remedium.ru/news/fas-priznala-ao-nizhfarm-narush/

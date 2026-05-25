@@ -14,7 +14,8 @@ from .agents import (
 )
 from .agents._llm import _TIMING
 from .agents.rule_checkers import ALL_CHECKERS
-from .schemas import ComplianceReport, Creative, Violation
+from .case_law_matcher import enrich_with_precedents
+from .schemas import ComplianceReport, Creative, Severity, Violation
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,19 @@ async def run_compliance(
             ", ".join(failed_checkers),
         )
     violations = aggregator_agent.aggregate(flat)
+
+    # Attach FAS / approved-report precedents to CRITICAL findings. Best-effort:
+    # if the matcher raises (malformed frontmatter in any one file), it logs a
+    # warning per failing file and returns the violations unchanged.
+    with _stage("precedents"):
+        try:
+            violations = enrich_with_precedents(
+                violations,
+                creative_text=parsed.extracted_text,
+                severity_floor=Severity.CRITICAL,
+            )
+        except Exception as exc:  # noqa: BLE001 — precedents are non-essential
+            logger.warning("precedent enrichment failed: %s — proceeding without", exc)
 
     with _stage("editor"):
         rewritten = (

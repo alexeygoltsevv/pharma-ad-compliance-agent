@@ -1,3 +1,14 @@
+---
+case_id: 2020-09-07-bionorica-canephron
+date: 2020-09-07
+party: ООО «Бионорика»
+product: Канефрон Н
+rule_ids: [ART24_P3_NO_SIDE_EFFECTS, ART24_P5_MANDATORY_DISCLAIMER]
+fine_rub: 200000
+url: https://cljournal.ru/news/20404/
+short_quote: "Канефрон Н эффективно снижает выраженность симптомов; положительное действие гарантировано"
+---
+
 # 2020-09-07 — ООО «Бионорика» / Канефрон Н
 
 **Источник (permalink):** https://cljournal.ru/news/20404/

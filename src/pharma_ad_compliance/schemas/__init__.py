@@ -7,9 +7,10 @@ from .creative import (
     TextCreative,
     UrlCreative,
 )
-from .violation import ComplianceReport, RuleId, Severity, Violation
+from .violation import CaseRef, ComplianceReport, RuleId, Severity, Violation
 
 __all__ = [
+    "CaseRef",
     "Creative",
     "DrugClass",
     "ImageCreative",

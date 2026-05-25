@@ -1,3 +1,14 @@
+---
+case_id: 2023-01-12-evalar-ginkoum-recurrent
+date: 2023-01-12
+party: ЗАО «Эвалар»
+product: Гинкоум
+rule_ids: [ART24_P3_NO_SIDE_EFFECTS, ART24_P5_MANDATORY_DISCLAIMER]
+fine_rub: 300000
+url: https://fas.gov.ru/news/32753
+short_quote: "Гинкоум — эффективное средство для улучшения мозгового кровообращения. Положительный результат гарантирован"
+---
+
 # 2023-01-12 — ЗАО «Эвалар» / Гинкоум
 
 **Источник (permalink):** https://fas.gov.ru/news/32753

@@ -6,6 +6,7 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from pharma_ad_compliance.schemas import (
+    CaseRef,
     ComplianceReport,
     Creative,
     DrugClass,
@@ -174,3 +175,80 @@ def test_compliance_report_with_failed_checkers_roundtrips():
     assert restored.diagnostics == {
         "failed_checkers": ["art24_p1_minors", "art24_other"]
     }
+
+
+def test_case_ref_minimal_payload():
+    ref = CaseRef(
+        case_id="2020-09-07-bionorica-canephron",
+        date="2020-09-07",
+        party="Бионорика",
+        source="fas",
+    )
+    assert ref.fine_rub is None
+    assert ref.url is None
+    assert ref.short_quote is None
+
+
+def test_case_ref_full_payload_roundtrips():
+    ref = CaseRef(
+        case_id="2020-09-07-bionorica-canephron",
+        date="2020-09-07",
+        party="Бионорика",
+        fine_rub=200000,
+        source="fas",
+        url="https://example.com/x",
+        short_quote="Канефрон Н — гарантия эффекта",
+    )
+    restored = CaseRef.model_validate_json(ref.model_dump_json())
+    assert restored == ref
+
+
+def test_case_ref_source_literal_validated():
+    with pytest.raises(ValidationError):
+        CaseRef(
+            case_id="x", date="2020-01-01", party="x",
+            source="invalid-source",  # type: ignore[arg-type]
+        )
+
+
+def test_case_ref_is_frozen():
+    ref = CaseRef(case_id="x", date="2020-01-01", party="x", source="approved")
+    with pytest.raises(ValidationError):
+        ref.party = "y"  # type: ignore[misc]
+
+
+def test_violation_precedents_default_empty():
+    """Existing payloads (without `precedents`) still validate cleanly.
+
+    Stored as a tuple (not list) so Violation stays hashable for aggregator
+    dedup; old payloads emit `[]` in JSON and pydantic coerces transparently.
+    """
+    v = Violation(
+        rule_id=RuleId.ART24_OTHER,
+        severity=Severity.WARNING,
+        explanation="...",
+    )
+    assert v.precedents == ()
+    # JSON-shape stays array — pydantic serializes tuples as JSON arrays.
+    import json as _json
+    payload = _json.loads(v.model_dump_json())
+    assert payload["precedents"] == []
+
+
+def test_violation_precedents_roundtrip():
+    ref = CaseRef(
+        case_id="2024-05-07-nizhfarm-artra",
+        date="2024-05-07",
+        party="Нижфарм",
+        fine_rub=None,
+        source="fas",
+    )
+    v = Violation(
+        rule_id=RuleId.ART24_P3_NO_SIDE_EFFECTS,
+        severity=Severity.CRITICAL,
+        explanation="...",
+        precedents=[ref],
+    )
+    restored = Violation.model_validate_json(v.model_dump_json())
+    assert len(restored.precedents) == 1
+    assert restored.precedents[0] == ref

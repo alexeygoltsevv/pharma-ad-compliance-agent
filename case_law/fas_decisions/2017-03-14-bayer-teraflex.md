@@ -1,3 +1,14 @@
+---
+case_id: 2017-03-14-bayer-teraflex
+date: 2017-03-14
+party: АО «Байер»
+product: Терафлекс
+rule_ids: [ART24_P3_NO_SIDE_EFFECTS]
+fine_rub: null
+url: https://fas.gov.ru/documents/ak-17953-17
+short_quote: "Гарантия положительного действия препарата (п. 8 ч. 1 ст. 24); дословный текст рекламы не опубликован"
+---
+
 # 2017-03-14 — АО «Байер» / Терафлекс
 
 **Источник (permalink):** https://fas.gov.ru/documents/ak-17953-17

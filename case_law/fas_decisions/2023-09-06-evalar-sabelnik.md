@@ -1,3 +1,14 @@
+---
+case_id: 2023-09-06-evalar-sabelnik
+date: 2023-09-06
+party: ЗАО «Эвалар»
+product: Настойка сабельника
+rule_ids: [ART24_P3_NO_SIDE_EFFECTS, ART24_P5_MANDATORY_DISCLAIMER]
+fine_rub: 350000
+url: https://adindex.ru/news/right/2023/09/7/315642.phtml
+short_quote: "Настойка сабельника избавит вас от боли при лечении суставов. Безвредно для желудка ввиду натурального состава"
+---
+
 # 2023-09-06 — ЗАО «Эвалар» / Настойка сабельника
 
 **Источник (permalink):** https://adindex.ru/news/right/2023/09/7/315642.phtml

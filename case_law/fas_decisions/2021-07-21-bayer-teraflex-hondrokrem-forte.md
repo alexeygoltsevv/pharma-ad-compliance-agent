@@ -1,3 +1,14 @@
+---
+case_id: 2021-07-21-bayer-teraflex-hondrokrem-forte
+date: 2021-07-21
+party: АО «Байер»
+product: Терафлекс Хондрокрем Форте
+rule_ids: [ART24_P3_NO_SIDE_EFFECTS, ART24_P5_MANDATORY_DISCLAIMER]
+fine_rub: 200000
+url: https://fas.gov.ru/news/31403
+short_quote: "Терафлекс Хондрокрем Форте — гарантия безопасности применения, эффективности и отсутствия побочных действий"
+---
+
 # 2021-07-21 — АО «Байер» / Терафлекс Хондрокрем Форте
 
 **Источник (permalink):** https://fas.gov.ru/news/31403

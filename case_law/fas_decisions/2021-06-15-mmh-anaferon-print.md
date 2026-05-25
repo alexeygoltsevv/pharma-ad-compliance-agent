@@ -1,3 +1,14 @@
+---
+case_id: 2021-06-15-mmh-anaferon-print
+date: 2021-06-15
+party: ООО «НПФ Материа Медика Холдинг»
+product: Анаферон детский
+rule_ids: [ART24_P3_NO_SIDE_EFFECTS, ART24_P5_MANDATORY_DISCLAIMER]
+fine_rub: 100000
+url: https://cljournal.ru/news/5899/
+short_quote: "Анаферон детский — препарат, эффективно защищающий ребёнка от ОРВИ и гриппа. Безопасен с 1 месяца"
+---
+
 # 2021-06-15 — ООО «НПФ Материа Медика Холдинг» / Анаферон детский
 
 **Источник (permalink):** https://cljournal.ru/news/5899/

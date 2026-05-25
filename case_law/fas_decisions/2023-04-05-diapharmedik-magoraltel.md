@@ -1,3 +1,14 @@
+---
+case_id: 2023-04-05-diapharmedik-magoraltel
+date: 2023-04-05
+party: ООО «Диафармедик Плюс»
+product: Магорел
+rule_ids: []
+fine_rub: null
+url: https://br.fas.gov.ru/cases/2ef8be26-2967-4633-bdf3-a68c39a3c94f/
+short_quote: "Некорректное сравнение (ч. 2 ст. 5 ФЗ-38) — out of scope для чекеров ст. 24"
+---
+
 # 2023-04-05 — ООО «Диафармедик Плюс» / Магорел
 
 **Источник (permalink):** https://br.fas.gov.ru/cases/2ef8be26-2967-4633-bdf3-a68c39a3c94f/

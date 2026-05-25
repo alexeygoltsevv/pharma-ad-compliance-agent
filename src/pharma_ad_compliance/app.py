@@ -22,6 +22,7 @@ from pharma_ad_compliance.schemas import (
     Severity,
     TextCreative,
     UrlCreative,
+    Violation,
 )
 
 # Папка-база знаний для одобренных пользователем отчётов.
@@ -333,6 +334,27 @@ if st.session_state.running and st.session_state.creative is not None:
 
 
 # ─── Result rendering ────────────────────────────────────────────────────────
+def _format_precedents_line(v: Violation) -> str | None:
+    """Render CRITICAL violation precedents as a compact one-liner.
+
+    Example: "⚖️ Похожие дела: Канефрон Н 2020 (200 000 ₽); Артра 2024"
+    Returns None when there are no precedents (most violations) or for
+    non-CRITICAL severity (the matcher only enriches CRITICAL by default).
+    """
+    if not v.precedents:
+        return None
+    pieces: list[str] = []
+    for ref in v.precedents[:3]:
+        year = ref.date.split("-", 1)[0] if ref.date else ""
+        label = f"{ref.party} {year}".strip()
+        if ref.fine_rub:
+            # Pretty-print fine with thin-space thousands grouping.
+            fine_fmt = f"{ref.fine_rub:,}".replace(",", " ")
+            label += f" ({fine_fmt} ₽)"
+        pieces.append(label)
+    return "⚖️ Похожие дела: " + "; ".join(pieces)
+
+
 def _format_table_rows(report: ComplianceReport) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for v in report.violations:
@@ -343,6 +365,9 @@ def _format_table_rows(report: ComplianceReport) -> list[dict[str, str]]:
         ]
         if v.intent_hypothesis:
             comment_parts.append(f"🧠 Замысел бренда: {v.intent_hypothesis}")
+        precedents_line = _format_precedents_line(v)
+        if precedents_line:
+            comment_parts.append(precedents_line)
         rows.append(
             {
                 "Исходный текст": v.quote or "(отсутствует в креативе)",

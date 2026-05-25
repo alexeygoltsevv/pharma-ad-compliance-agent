@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -38,6 +38,33 @@ class RuleId(str, Enum):
     ART24_OTHER = "ART24_OTHER"                                  # подпункты ч. 1, не покрытые отдельными чекерами: п. 3 (благодарность), п. 4 (ссылка на исследования при регистрации), п. 5 (навязывание диагноза), п. 6 (необходимость у здорового), п. 7 (ненужность врача), п. 9 (БАД ↔ ЛС), п. 10 (безопасность через «естественное происхождение»)
 
 
+class CaseRef(BaseModel):
+    """Reference to a past FAS ruling or in-house approved report.
+
+    Surfaced for CRITICAL violations as "⚖️ Похожие дела" — gives the legal
+    reviewer a precedent and the brand-manager a trust-signal ("кто-то уже на
+    этом горел"). Built by `case_law_matcher` from YAML frontmatter in
+    `case_law/fas_decisions/*.md` and from the `findings[].rule_id` of each
+    `case_law/approved_reports/*.json`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    case_id: str = Field(..., description="kebab-case file stem (no .md/.json).")
+    date: str = Field(..., description="ISO date YYYY-MM-DD when the case was decided / report approved.")
+    party: str = Field(..., description="Defendant / advertiser brand or company.")
+    fine_rub: int | None = Field(
+        default=None,
+        description="Fine in rubles if published; None when unknown.",
+    )
+    source: Literal["fas", "approved"]
+    url: str | None = None
+    short_quote: str | None = Field(
+        default=None,
+        description="1-line summary of the violation text in the precedent case.",
+    )
+
+
 class Violation(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -59,6 +86,16 @@ class Violation(BaseModel):
             "пытался коммуницировать этой формулировкой — JTBD/коммерческое "
             "намерение, не оправдание нарушения. Помогает editor'у сохранить "
             "посыл при переформулировке, а UI — показать tooltip."
+        ),
+    )
+    precedents: tuple[CaseRef, ...] = Field(
+        default_factory=tuple,
+        description=(
+            "Случаи из case_law/ с тем же rule_id (FAS rulings + одобренные "
+            "внутренние отчёты). Заполняется case_law_matcher после aggregator "
+            "ТОЛЬКО для CRITICAL-нарушений. Хранится как tuple (а не list), "
+            "чтобы сохранить hashability frozen Violation — aggregator складывает "
+            "Violation в set/dict при дедупликации."
         ),
     )
 

@@ -1,3 +1,14 @@
+---
+case_id: 2019-04-15-evalar-ginkoum
+date: 2019-04-15
+party: ЗАО «Эвалар»
+product: Гинкоум
+rule_ids: [ART24_P3_NO_SIDE_EFFECTS, ART24_P5_MANDATORY_DISCLAIMER]
+fine_rub: 200000
+url: https://pravo.ru/news/211206/
+short_quote: "Гинкоум устраняет головную боль, головокружение, шум в ушах — гарантия эффекта"
+---
+
 # 2019-04-15 — ЗАО «Эвалар» / Гинкоум
 
 **Источник (permalink):** https://pravo.ru/news/211206/

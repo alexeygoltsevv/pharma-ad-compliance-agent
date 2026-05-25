@@ -1,3 +1,14 @@
+---
+case_id: 2019-04-02-mmh-anaferon-detsky
+date: 2019-04-02
+party: ООО «НПФ Материа Медика Холдинг»
+product: Анаферон детский
+rule_ids: []
+fine_rub: 200000
+url: https://normativ.kontur.ru/document?moduleId=1&documentId=365013
+short_quote: "Предупреждение о противопоказаниях занимало менее 5% площади (визуальная композиция — out of scope для text-pipeline)"
+---
+
 # 2019-04-02 — ООО «НПФ Материа Медика Холдинг» / Анаферон детский
 
 **Источник (permalink):** https://normativ.kontur.ru/document?moduleId=1&documentId=365013
