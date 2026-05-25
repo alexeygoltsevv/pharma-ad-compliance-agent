@@ -30,12 +30,40 @@ make eval                                                              # full da
 Each case runs the pipeline (LLM calls included) and reports PASS/FAIL. Total cost is ~3-5 LLM calls per case (parser is free for text, classifier + 6 checkers; editor skipped).
 
 ## Why CI doesn't run eval
-The GitHub Actions runner has no Claude subscription. Eval is run locally before each PR; results are pasted into the PR description.
 
-If you want eval in CI, set `ANTHROPIC_API_KEY` in repo secrets and add a step to `.github/workflows/regression-eval.yml`.
+The GitHub Actions runner has no `claude` CLI authenticated against a Claude
+Code subscription, and this project intentionally does not use
+`ANTHROPIC_API_KEY` (the SDK delegates auth to the local CLI). The previous
+`.github/workflows/regression-eval.yml` was gated on `ANTHROPIC_API_KEY` and
+was therefore a no-op on every run — it has been removed. Regression eval is
+the developer's local responsibility: run `make eval` before each PR and paste
+the result into the PR description.
+
+CI still runs `ruff`, `mypy`, and `pytest -m "not llm"` (which covers schemas,
+the aggregator, parser security/SSRF, `_llm` extraction/retry logic, the
+rule_checker rule-id-override path, and CLI smoke tests).
 
 ## Adding cases
 1. Find a public FAS ruling on FZ-38 art. 24 at https://fas.gov.ru.
 2. Extract the ad text quoted in the decision.
-3. Add an entry to `case_law/regression_dataset/<topic>.jsonl`.
+3. Add an entry to `case_law/regression_dataset/<topic>.jsonl` (id must match
+   the `fas_decisions/*.md` filename — `tests/test_regression_wiring.py`
+   enforces this).
 4. Run `make eval` locally — it must pass before merge.
+
+## Known scope gaps
+
+The regression dataset includes several **clean controls** for cases the
+pipeline intentionally does not catch. These ensure the pipeline does not
+hallucinate findings on otherwise compliant copy:
+
+1. **Visual-layout violations** — e.g. ч. 7 ст. 24 "disclaimer occupies less
+   than 5 % of ad area" (FAS vs. ООО «НПФ Материа Медика Холдинг» / Анаферон
+   детский, 2019). The pipeline is text-only and cannot observe area
+   percentages or font sizes. Such cases are wired as clean controls.
+2. **ст. 25 ФЗ-38 «не является ЛС» on БАД** — partially addressed via
+   `art24_other` (the БАД-without-marker branch maps to `ART24_OTHER` /
+   ч. 1 п. 9 ст. 24). Full coverage of ст. 25 in isolation is out of scope.
+3. **ст. 5 ч. 2 ФЗ-38 (некорректное сравнение)** — general advertising law,
+   not pharma-specific. Intentionally not covered by any checker (FAS vs.
+   ООО «Диафармедик Плюс» / Магорел, 2023, is wired as a clean control).

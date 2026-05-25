@@ -35,3 +35,9 @@ Thumbs.db
 # Project artifacts
 demo_output/
 *.local.json
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml

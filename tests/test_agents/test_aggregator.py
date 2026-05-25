@@ -87,3 +87,45 @@ def test_aggregate_null_quote_is_its_own_bucket():
     out = aggregate(items)
     assert len(out) == 1
     assert out[0].severity is Severity.CRITICAL
+
+
+def test_aggregate_merges_longer_suggested_fix_from_loser():
+    # The CRITICAL wins on severity, but its fix is shorter — we should
+    # salvage the WARNING's richer rewrite so the user gets the better text.
+    rich_fix = "Замените «полностью безопасен» на «хорошо переносится по данным КИ»."
+    short_fix = "Удалить."
+    items = [
+        Violation(
+            rule_id=RuleId.ART24_P3_NO_SIDE_EFFECTS,
+            severity=Severity.CRITICAL,
+            quote="полностью безопасен",
+            explanation="...",
+            suggested_fix=short_fix,
+        ),
+        Violation(
+            rule_id=RuleId.ART24_P3_NO_SIDE_EFFECTS,
+            severity=Severity.WARNING,
+            quote="полностью безопасен",
+            explanation="...",
+            suggested_fix=rich_fix,
+        ),
+    ]
+    out = aggregate(items)
+    assert len(out) == 1
+    assert out[0].severity is Severity.CRITICAL
+    assert out[0].suggested_fix == rich_fix
+
+
+def test_aggregate_normalizes_surrounding_punctuation():
+    # «цитата.» and «цитата» should dedupe to the same bucket.
+    items = [
+        _v(RuleId.ART24_P2_SPECIFIC_CASES, Severity.CRITICAL, "«вылечилась за неделю.»"),
+        _v(RuleId.ART24_P2_SPECIFIC_CASES, Severity.WARNING, "вылечилась за неделю"),
+    ]
+    out = aggregate(items)
+    assert len(out) == 1
+    assert out[0].severity is Severity.CRITICAL
+
+
+def test_aggregate_empty_input_returns_empty():
+    assert aggregate([]) == []

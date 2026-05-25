@@ -88,3 +88,57 @@ def test_compliance_report_critical_marks_noncompliant():
     )
     assert report.is_compliant is False
     assert report.by_severity(Severity.CRITICAL)
+
+
+def test_violation_is_frozen():
+    v = Violation(
+        rule_id=RuleId.ART24_OTHER,
+        severity=Severity.WARNING,
+        explanation="...",
+    )
+    with pytest.raises(ValidationError):
+        v.severity = Severity.CRITICAL  # type: ignore[misc]
+
+
+def test_violation_is_hashable():
+    """Aggregator dedupes by tuple keys derived from Violation — must hash cleanly."""
+    v1 = Violation(
+        rule_id=RuleId.ART24_OTHER,
+        severity=Severity.WARNING,
+        quote="x",
+        explanation="...",
+    )
+    v2 = Violation(
+        rule_id=RuleId.ART24_OTHER,
+        severity=Severity.WARNING,
+        quote="x",
+        explanation="...",
+    )
+    # hash + put in dict/set without TypeError.
+    assert hash(v1) == hash(v2)
+    bucket = {v1: 1}
+    bucket[v2] = 2  # same hash → may stay one or two slots, but must not raise
+    assert {v1, v2}  # set construction
+
+
+def test_compliance_report_diagnostics_default_empty():
+    report = ComplianceReport(
+        source_kind="text",
+        drug_class=DrugClass.OTC,
+        extracted_text="...",
+    )
+    assert report.diagnostics == {}
+
+
+def test_compliance_report_with_failed_checkers_roundtrips():
+    report = ComplianceReport(
+        source_kind="text",
+        drug_class=DrugClass.OTC,
+        extracted_text="...",
+        diagnostics={"failed_checkers": ["art24_p1_minors", "art24_other"]},
+    )
+    payload = report.model_dump_json()
+    restored = ComplianceReport.model_validate_json(payload)
+    assert restored.diagnostics == {
+        "failed_checkers": ["art24_p1_minors", "art24_other"]
+    }

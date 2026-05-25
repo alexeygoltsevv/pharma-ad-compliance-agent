@@ -5,8 +5,7 @@
 ```
                 ┌──────────────────────────┐
                 │   Creative input         │
-                │ TextCreative | Image |   │
-                │ UrlCreative              │
+                │ Text | Image | URL | PDF │
                 └─────────────┬────────────┘
                               │
                               ▼
@@ -15,6 +14,7 @@
                 │  text:  passthrough      │
                 │  url:   httpx + BS4      │
                 │  image: Claude Vision    │
+                │  pdf:   PyMuPDF (+ OCR)  │
                 └─────────────┬────────────┘
                               │  ParsedCreative
                               ▼
@@ -67,12 +67,30 @@ All LLM calls go through `claude-agent-sdk` (`agents/_llm.py`). Each call:
 
 Auth is delegated to the local `claude` CLI (Claude Code subscription). No API key is required for local development.
 
+## ComplianceReport shape
+
+The terminal node of the pipeline is `ComplianceReport`
+([`schemas/violation.py`](../src/pharma_ad_compliance/schemas/violation.py)):
+
+- `creative_id`, `source_kind`, `drug_class`, `extracted_text` — provenance.
+- `violations: list[Violation]` — deduped + sorted by severity.
+- `rewritten_text: str | None` — set only when `include_rewrite=True` and the
+  editor ran.
+- `metadata: dict[str, str]` — `str→str` parser-side info (`page_count`,
+  `ocr_pages`, `truncated`, …).
+- `diagnostics: dict[str, Any]` — pipeline-level structured info kept
+  **separate from `metadata`** so we can store lists / nested structures
+  without breaking the parser's strict `str→str` contract. Today's only key is
+  `failed_checkers: list[str]` (module-name slugs of checkers that raised);
+  UIs use it to surface partial-results warnings.
+
 ## Failure modes (and what we do about them)
 
 | Failure | Mitigation |
 |---|---|
 | Model returns prose around JSON | `_extract_json` finds the first fenced block or balanced-brace value |
 | Model returns invalid JSON | `LLMOutputError` with the first 500 chars of raw output |
-| Model picks the wrong `rule_id` | `_base.check_rule` overrides with the checker's own `rule_id` (except for `ART24_OTHER`) |
+| Model picks the wrong `rule_id` | `_base.check_rule` overrides with the checker's own `rule_id` — applies to **all** checkers including `ART24_OTHER`, since the model otherwise invents sub-rule ids (e.g. `ART24_OTHER_P6`) that crash the enum validator |
+| A single checker raises | `asyncio.gather(return_exceptions=True)` so partial results survive; failing checker names land in `ComplianceReport.diagnostics["failed_checkers"]` for the UI to surface |
 | Two checkers flag the same span | aggregator dedupes by `(rule_id, normalized_quote)` and keeps higher severity |
 | Network/auth failure | propagates `CLIConnectionError` from the SDK |

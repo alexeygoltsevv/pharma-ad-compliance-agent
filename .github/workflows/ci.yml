@@ -34,3 +34,15 @@ jobs:
 
       - name: Pytest (non-LLM only)
         run: pytest -m "not llm" -v
+
+      - name: Coverage (non-LLM only)
+        run: |
+          python -m pytest -m "not llm" --cov=src --cov-report=term --cov-report=html
+
+      - name: Upload coverage HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: htmlcov/
+          if-no-files-found: ignore
