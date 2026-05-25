@@ -12,3 +12,7 @@ gatherUsageStats = false
 # blocks any non-interactive launch — make, CI, background runs) and don't try
 # to auto-open a browser.
 headless = true
+# Defense-in-depth at the HTTP layer, on top of PHARMA_AD_MAX_FILE_BYTES.
+# Both are MiB.
+maxUploadSize = 25
+maxMessageSize = 25

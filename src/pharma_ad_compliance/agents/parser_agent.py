@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import logging
 import os
 import re
 import socket
@@ -24,6 +25,8 @@ from ..schemas import (
 )
 from ._llm import run_json
 
+logger = logging.getLogger(__name__)
+
 
 class ParserInputError(ValueError):
     """Raised when an input is rejected before any model call (unsafe URL, too large)."""
@@ -33,6 +36,10 @@ class ParserInputError(ValueError):
 _PDF_MIN_CHARS_PER_PAGE = 80
 # Растеризация для Vision — 200 DPI хватает для распознавания мелкого шрифта в дисклеймерах.
 _PDF_RENDER_DPI = 200
+# Decompression-bomb guard: a 1 KB PDF can declare a 200×200 inch MediaBox →
+# 40000×40000 px raster ≈ 6.4 GB. 50 MP at 200 DPI ≈ 35×35 inch page, generous
+# for any real document.
+_PDF_MAX_PAGE_MEGAPIXELS = 50
 # Resource caps — bound cost (Vision calls) and memory (rasterization) on adversarial input.
 _PDF_MAX_PAGES = int(os.environ.get("PHARMA_AD_PDF_MAX_PAGES", "30"))
 _PDF_MAX_OCR_PAGES = int(os.environ.get("PHARMA_AD_PDF_MAX_OCR_PAGES", "15"))
@@ -49,6 +56,9 @@ _ALLOW_PRIVATE_URLS = os.environ.get("PHARMA_AD_ALLOW_PRIVATE_URLS", "").strip()
     "false",
     "no",
 )
+# Emit a single warning per process when the SSRF guard is disabled — set on
+# first fetch in _fetch_url so we don't spam logs on every URL.
+_PRIVATE_URLS_WARNED = False
 _HTML_TAGS_TO_STRIP = ("script", "style", "noscript", "iframe", "svg", "footer", "header", "nav")
 # Landing pages routinely yield 10–20 KB of text after strip (carousels, FAQ, reviews).
 # Sonnet on that much input takes 60–90s per checker call → 8 calls × 5-parallel = ~3 min.
@@ -129,8 +139,16 @@ def _check_file_size(path: Path, kind: str) -> None:
         )
 
 
-def _validate_public_url(url: str) -> None:
-    """SSRF guard: allow only http(s) URLs that resolve to public IP addresses."""
+def _validate_public_url(url: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """SSRF guard: allow only http(s) URLs that resolve to globally-routable IPs.
+
+    Returns the list of resolved IPs that passed validation. Callers should pin
+    against this list (defense-in-depth against DNS-rebinding / TOCTOU between
+    this validation and the actual socket connect performed by httpx).
+
+    When `_ALLOW_PRIVATE_URLS` is set, validation is skipped and an empty list
+    is returned (the caller must then skip the post-hoc pin check too).
+    """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise ParserInputError(
@@ -140,29 +158,49 @@ def _validate_public_url(url: str) -> None:
     if not host:
         raise ParserInputError("Не удалось определить хост ссылки.")
     if _ALLOW_PRIVATE_URLS:
-        return
+        return []
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     try:
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as e:
         raise ParserInputError(f"Не удалось разрешить хост «{host}»: {e}") from e
+    resolved: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
+        # `is_global` covers private/loopback/link-local/multicast/reserved/
+        # unspecified AND also CGN-NAT 100.64.0.0/10 (RFC 6598) and IETF future-
+        # use ranges, which the per-flag chain used to miss.
+        if not ip.is_global:
             raise ParserInputError(
                 f"Ссылка ведёт на внутренний/непубличный адрес ({ip}) — "
+                "это не глобально-маршрутизируемый адрес, запрещено из "
+                "соображений безопасности (SSRF)."
+            )
+        # `is_global` can be lenient on IPv4-mapped IPv6 (::ffff:a.b.c.d):
+        # re-check the embedded IPv4 to make sure that too is globally routable.
+        if (
+            isinstance(ip, ipaddress.IPv6Address)
+            and ip.ipv4_mapped is not None
+            and not ip.ipv4_mapped.is_global
+        ):
+            raise ParserInputError(
+                f"Ссылка ведёт на внутренний/непубличный адрес ({ip.ipv4_mapped} "
+                "через IPv4-mapped IPv6) — не глобально-маршрутизируемый адрес, "
                 "запрещено из соображений безопасности (SSRF)."
             )
+        resolved.append(ip)
+    return resolved
 
 
 async def _fetch_url(url: str) -> tuple[str, str, int]:
+    global _PRIVATE_URLS_WARNED
+    if _ALLOW_PRIVATE_URLS and not _PRIVATE_URLS_WARNED:
+        logger.warning(
+            "PHARMA_AD_ALLOW_PRIVATE_URLS=1 — SSRF guard is DISABLED. "
+            "URLs resolving to private/loopback/internal IPs will be fetched. "
+            "Never enable this in production."
+        )
+        _PRIVATE_URLS_WARNED = True
     async with httpx.AsyncClient(
         timeout=_URL_FETCH_TIMEOUT,
         follow_redirects=False,  # validate every hop ourselves to prevent SSRF via redirect
@@ -172,12 +210,41 @@ async def _fetch_url(url: str) -> tuple[str, str, int]:
         body = b""
         encoding: str | None = None
         for _ in range(_URL_MAX_REDIRECTS + 1):
-            _validate_public_url(current)
+            # Pin the IPs we just validated. httpx will do its own getaddrinfo
+            # for the actual connect (TOCTOU window); we re-check after the
+            # response that the socket landed on one of these IPs, eliminating
+            # the DNS-rebinding window as defense-in-depth. (httpx 0.28 has no
+            # clean SNI-preserving way to feed it a pre-resolved IP, and
+            # rewriting the URL to a literal IP would break TLS SNI for any
+            # vhosted https origin.)
+            pinned_ips = _validate_public_url(current)
             async with client.stream("GET", current) as resp:
+                if not _ALLOW_PRIVATE_URLS and pinned_ips:
+                    ns = resp.extensions.get("network_stream")
+                    server_addr = ns.get_extra_info("server_addr") if ns is not None else None
+                    if server_addr is not None:
+                        try:
+                            actual_ip = ipaddress.ip_address(server_addr[0])
+                        except (ValueError, TypeError):
+                            actual_ip = None
+                        if actual_ip is None or actual_ip not in pinned_ips:
+                            raise ParserInputError(
+                                f"Хост подменил IP между проверкой и подключением "
+                                f"({actual_ip} не входит в проверенный набор) — "
+                                "защита от DNS-rebinding."
+                            )
                 if resp.is_redirect and "location" in resp.headers:
                     current = urljoin(current, resp.headers["location"])
                     continue
                 resp.raise_for_status()
+                ctype = resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                if not (
+                    ctype.startswith("text/")
+                    or ctype in {"application/xhtml+xml", "application/xml", ""}
+                ):
+                    raise ParserInputError(
+                        f"Отказ обрабатывать не-текстовый ответ: content-type={ctype!r}"
+                    )
                 clen = resp.headers.get("content-length")
                 if clen and clen.isdigit() and int(clen) > _URL_MAX_BYTES:
                     raise ParserInputError(
@@ -256,6 +323,21 @@ async def _parse_pdf(pdf_path: Path) -> tuple[str, dict[str, str]]:
             if len(text) >= _PDF_MIN_CHARS_PER_PAGE:
                 per_page_text[i] = text
             elif len(ocr_indices) < _PDF_MAX_OCR_PAGES:
+                # Decompression-bomb guard: PDF units are 1/72 inch; megapixels
+                # at render DPI ≈ (w_in * dpi) * (h_in * dpi) / 1e6. Skip pages
+                # whose declared geometry would blow up memory.
+                width_in = page.rect.width / 72.0
+                height_in = page.rect.height / 72.0
+                megapixels = (width_in * _PDF_RENDER_DPI) * (height_in * _PDF_RENDER_DPI) / 1e6
+                if megapixels > _PDF_MAX_PAGE_MEGAPIXELS:
+                    logger.warning(
+                        "PDF page %d too large to rasterize (%.1f MP > %d MP cap), skipping",
+                        i + 1,
+                        megapixels,
+                        _PDF_MAX_PAGE_MEGAPIXELS,
+                    )
+                    skipped_ocr_pages.append(i + 1)
+                    continue
                 pix = page.get_pixmap(dpi=_PDF_RENDER_DPI, alpha=False)
                 png_bytes = pix.tobytes("png")
                 ocr_indices.append(i)
