@@ -341,6 +341,8 @@ def _format_table_rows(report: ComplianceReport) -> list[dict[str, str]]:
             f"📖 {RULE_ARTICLE_REFS.get(v.rule_id.value, '')} ФЗ-38",
             v.explanation,
         ]
+        if v.intent_hypothesis:
+            comment_parts.append(f"🧠 Замысел бренда: {v.intent_hypothesis}")
         rows.append(
             {
                 "Исходный текст": v.quote or "(отсутствует в креативе)",

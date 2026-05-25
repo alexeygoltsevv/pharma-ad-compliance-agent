@@ -121,6 +121,38 @@ def test_violation_is_hashable():
     assert {v1, v2}  # set construction
 
 
+def test_violation_intent_hypothesis_defaults_to_none():
+    """New `intent_hypothesis` field is optional — old payloads (without it) still validate."""
+    v = Violation(
+        rule_id=RuleId.ART24_OTHER,
+        severity=Severity.WARNING,
+        explanation="...",
+    )
+    assert v.intent_hypothesis is None
+
+
+def test_violation_intent_hypothesis_roundtrips():
+    """When set, intent_hypothesis survives JSON dump → load and stays on the model."""
+    v = Violation(
+        rule_id=RuleId.ART24_P3_NO_SIDE_EFFECTS,
+        severity=Severity.CRITICAL,
+        quote="полностью безопасен",
+        explanation="Гарантия безопасности запрещена ч. 1 п. 8 ст. 24.",
+        suggested_fix="хорошо переносится по данным КИ",
+        intent_hypothesis=(
+            "Бренд снимал страх побочки — дал абсолютное утверждение вместо описания "
+            "профиля переносимости."
+        ),
+    )
+    assert v.intent_hypothesis is not None
+    assert v.intent_hypothesis.startswith("Бренд снимал страх")
+    restored = Violation.model_validate_json(v.model_dump_json())
+    assert restored.intent_hypothesis == v.intent_hypothesis
+    # Round-trip via dict too (the pipeline frequently goes through model_dump).
+    restored2 = Violation.model_validate(v.model_dump())
+    assert restored2 == v
+
+
 def test_compliance_report_diagnostics_default_empty():
     report = ComplianceReport(
         source_kind="text",

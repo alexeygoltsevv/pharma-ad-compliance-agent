@@ -155,6 +155,34 @@ async def test_check_rule_invalid_json_after_extraction_raises(monkeypatch):
         )
 
 
+async def test_check_rule_preserves_intent_hypothesis(monkeypatch):
+    """Model-provided `intent_hypothesis` must reach the parsed Violation unchanged."""
+    intent = "Бренд хотел снять страх побочки — дал абсолютное утверждение."
+    payload = {
+        "violations": [
+            {
+                "severity": "CRITICAL",
+                "quote": "полностью безопасен",
+                "explanation": "Гарантия безопасности — нарушение ч. 1 п. 8 ст. 24.",
+                "suggested_fix": "хорошо переносится по данным КИ",
+                "intent_hypothesis": intent,
+            }
+        ]
+    }
+    monkeypatch.setattr(_COLLECT_TEXT_PATH, AsyncMock(return_value=json.dumps(payload)))
+
+    out = await check_rule(
+        parsed=_parsed(),
+        drug_class=DrugClass.OTC,
+        rule_id=RuleId.ART24_P3_NO_SIDE_EFFECTS,
+        focus_instruction="(focus stub)",
+    )
+    assert len(out) == 1
+    assert out[0].intent_hypothesis == intent
+    # rule_id override still works alongside the new field.
+    assert out[0].rule_id is RuleId.ART24_P3_NO_SIDE_EFFECTS
+
+
 async def test_check_rule_violation_schema_violation_raises(monkeypatch):
     """A violation with an invalid severity string → LLMOutputError."""
     payload = {

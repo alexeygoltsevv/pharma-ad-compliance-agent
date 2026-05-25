@@ -52,6 +52,15 @@ class Violation(BaseModel):
         default=None,
         description="Concrete rewrite or removal suggestion.",
     )
+    intent_hypothesis: str | None = Field(
+        default=None,
+        description=(
+            "Краткая (1 предложение) гипотеза на русском о том, что бренд "
+            "пытался коммуницировать этой формулировкой — JTBD/коммерческое "
+            "намерение, не оправдание нарушения. Помогает editor'у сохранить "
+            "посыл при переформулировке, а UI — показать tooltip."
+        ),
+    )
 
 
 class ComplianceReport(BaseModel):
