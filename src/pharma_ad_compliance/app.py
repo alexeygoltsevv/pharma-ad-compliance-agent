@@ -64,6 +64,7 @@ def _init_state() -> None:
         "approved_path": None,
         "running": False,
         "run_error": None,
+        "refine_comment": "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -272,11 +273,21 @@ if st.session_state.run_error:
     st.session_state.run_error = None
 
 running = st.session_state.running
+if running:
+    run_help = "Дождитесь окончания текущей проверки."
+elif creative is None:
+    run_help = (
+        "Заполните хотя бы одно поле выше: вставьте текст, загрузите баннер или PDF, "
+        "либо укажите ссылку."
+    )
+else:
+    run_help = "Запустить полный пайплайн compliance-проверки."
 run_clicked = st.button(
     "⏳ Идёт проверка соответствия…" if running else "▶ Запустить проверку соответствия",
     type="primary",
     disabled=creative is None or running,
     use_container_width=True,
+    help=run_help,
 )
 
 # Click → flip into the running state and rerun immediately, so the button renders
@@ -525,59 +536,109 @@ if st.session_state.report is not None and not st.session_state.running:
         # st.code shows a built-in copy icon
         st.code(plain_report, language=None)
     with c2:
+        # P3 + P5: disable approve after save (prevents duplicate writes to
+        # case_law/approved_reports/) and rename — "Нормальный ответ" was
+        # misleading because the button works even on reports with CRITICAL
+        # violations. _reset_run_state() clears approved_path on the next run,
+        # so the button is fresh for the next creative.
+        already_saved = bool(st.session_state.approved_path)
         st.markdown("**✅ Утвердить ответ**")
         st.caption("Сохранить в базу знаний `case_law/approved_reports/`")
-        if st.button("Нормальный ответ", key="approve_btn", use_container_width=True):
+        if st.button(
+            "✅ Уже сохранён" if already_saved else "Сохранить в базу знаний",
+            key="approve_btn",
+            use_container_width=True,
+            disabled=already_saved,
+            help=(
+                "Сохранено: " + st.session_state.approved_path
+                if already_saved
+                else "Сохранит отчёт целиком (с нарушениями и переписками) в JSON."
+            ),
+        ):
             path = _save_approved(report, feedback)
             st.session_state.approved_path = str(path.relative_to(path.parents[2]))
-            st.success(f"✅ Сохранено: `{st.session_state.approved_path}`")
+            st.rerun()
     with c3:
+        # P4: toggle — clicking the same button twice closes the refine form.
+        # The Cancel button inside the form provides an explicit close path
+        # too. Clearing refine_comment on close avoids stale text on next open.
         st.markdown("**🔄 Доработать**")
         st.caption("Дать комментарий и перезапустить с его учётом")
-        if st.button("Доработать с учётом комментария", key="refine_btn", use_container_width=True):
-            st.session_state.show_refine = True
+        refine_open = st.session_state.show_refine
+        if st.button(
+            "❌ Отменить доработку" if refine_open else "Доработать с учётом комментария",
+            key="refine_btn",
+            use_container_width=True,
+        ):
+            st.session_state.show_refine = not refine_open
+            if not st.session_state.show_refine:
+                st.session_state.refine_comment = ""
+            st.rerun()
 
-    # ── Refine form ──────────────────────────────────────────────────────────
+    # ── Refine "form" ────────────────────────────────────────────────────────
+    # P1: NOT wrapped in st.form so the submit can be reactively disabled until
+    # the textarea has content. The cost: no clear_on_submit — we clear via
+    # session_state["refine_comment"] = "" before st.rerun(). Cancel does the
+    # same plus closes show_refine.
     if st.session_state.show_refine:
         st.divider()
-        with st.form("refine_form", clear_on_submit=True):
-            st.markdown("**💬 Комментарий для следующей итерации**")
-            user_comment = st.text_area(
-                "Что нужно учесть / переделать?",
-                height=140,
-                placeholder=(
-                    "Например: «Дисклеймер уже есть в footer лендинга — не нужно "
-                    "флагировать его как отсутствующий» или «Замени слово 'безопасен' "
-                    "на 'хорошо переносится по данным КИ' вместо удаления»."
+        st.markdown("**💬 Комментарий для следующей итерации**")
+        st.text_area(
+            "Что нужно учесть / переделать?",
+            height=140,
+            key="refine_comment",
+            placeholder=(
+                "Например: «Дисклеймер уже есть в footer лендинга — не нужно "
+                "флагировать его как отсутствующий» или «Замени слово 'безопасен' "
+                "на 'хорошо переносится по данным КИ' вместо удаления»."
+            ),
+        )
+        comment = st.session_state.refine_comment.strip()
+        b1, b2 = st.columns([3, 1])
+        with b1:
+            submitted = st.button(
+                "Отправить и перезапустить",
+                type="primary",
+                disabled=not comment,
+                use_container_width=True,
+                key="refine_submit",
+                help=(
+                    "Напишите комментарий выше — кнопка станет активной."
+                    if not comment
+                    else "Перезапустить пайплайн с этим комментарием в контексте."
                 ),
             )
-            submitted = st.form_submit_button("Отправить и перезапустить", type="primary")
-        if submitted:
-            comment = (user_comment or "").strip()
-            if not comment:
-                st.warning("Комментарий пустой — напишите, что нужно учесть.")
-            else:
-                st.session_state.feedback_history.append(comment)
+        with b2:
+            if st.button(
+                "Отмена",
+                use_container_width=True,
+                key="refine_cancel",
+            ):
                 st.session_state.show_refine = False
-                # Re-run pipeline with accumulated feedback
-                try:
-                    report2, elapsed = _run_pipeline(
-                        st.session_state.creative,
-                        feedback=st.session_state.feedback_history,
-                    )
-                except Exception as e:  # noqa: BLE001
-                    # Rollback the just-added comment so the user can retry without duplicating it.
-                    st.session_state.feedback_history.pop()
-                    st.error(
-                        "❌ Перезапуск с комментарием не удался. "
-                        "Попробуйте ещё раз через 30–60 секунд "
-                        "(комментарий не сохранён в истории).\n\n"
-                        f"**Техническая ошибка:** `{type(e).__name__}: {e}`"
-                    )
-                else:
-                    st.session_state.report = report2
-                    st.session_state.last_elapsed = elapsed
-                    st.rerun()
+                st.session_state.refine_comment = ""
+                st.rerun()
+        if submitted:
+            st.session_state.feedback_history.append(comment)
+            st.session_state.show_refine = False
+            st.session_state.refine_comment = ""
+            try:
+                report2, elapsed = _run_pipeline(
+                    st.session_state.creative,
+                    feedback=st.session_state.feedback_history,
+                )
+            except Exception as e:  # noqa: BLE001
+                # Rollback the just-added comment so the user can retry without duplicating it.
+                st.session_state.feedback_history.pop()
+                st.error(
+                    "❌ Перезапуск с комментарием не удался. "
+                    "Попробуйте ещё раз через 30–60 секунд "
+                    "(комментарий не сохранён в истории).\n\n"
+                    f"**Техническая ошибка:** `{type(e).__name__}: {e}`"
+                )
+            else:
+                st.session_state.report = report2
+                st.session_state.last_elapsed = elapsed
+                st.rerun()
 
     # ── Approved confirmation ────────────────────────────────────────────────
     if st.session_state.approved_path:

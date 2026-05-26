@@ -67,20 +67,33 @@ def _render_variant(
 
     if on_feedback is None:
         return
+    # NOT wrapped in st.form so the submit can be reactively disabled until the
+    # textarea has content. The host's on_feedback handler triggers st.rerun()
+    # on success, so we clear the input via session_state before invoking it.
     with st.expander("💬 Комментарий по этому варианту", expanded=False):
-        with st.form(f"variant_feedback_{idx}", clear_on_submit=True):
-            comment = st.text_area(
-                "Что доработать в этом варианте?",
-                height=100,
-                key=f"variant_feedback_text_{idx}",
-            )
-            submitted = st.form_submit_button("Применить ко всему пайплайну")
-        if submitted:
-            text_clean = (comment or "").strip()
-            if not text_clean:
-                st.warning("Комментарий пустой — напишите, что нужно учесть.")
-            else:
-                on_feedback(variant, text_clean)
+        text_key = f"variant_feedback_text_{idx}"
+        st.text_area(
+            "Что доработать в этом варианте?",
+            height=100,
+            key=text_key,
+            placeholder="Например: «Сделай чуть менее формально».",
+        )
+        comment = st.session_state.get(text_key, "").strip()
+        if st.button(
+            "Применить ко всему пайплайну",
+            disabled=not comment,
+            key=f"variant_feedback_submit_{idx}",
+            help=(
+                "Напишите комментарий выше — кнопка станет активной."
+                if not comment
+                else "Перезапустит пайплайн с этим комментарием."
+            ),
+        ):
+            # Clear before on_feedback() — the host typically reruns after
+            # pipeline succeeds, and we want the next render to show an
+            # empty input rather than the just-submitted text.
+            st.session_state[text_key] = ""
+            on_feedback(variant, comment)
 
 
 def _render_variant_tabs(
