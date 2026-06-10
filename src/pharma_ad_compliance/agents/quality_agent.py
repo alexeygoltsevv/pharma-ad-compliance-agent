@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from ..schemas import RewriteScore
+from ..schemas import REWRITE_SCORE_KEYS, RewriteScore
 from ._llm import HAIKU_MODEL, LLMOutputError, _collect_text, _extract_json
 
 logger = logging.getLogger(__name__)
@@ -39,8 +39,10 @@ def _rubric_prompt() -> str:
 # chars per side is plenty of signal.
 _MAX_CHARS_PER_SIDE = 6000
 
-# Required breakdown keys, in the same order Pydantic validates them.
-_BREAKDOWN_KEYS = ("concreteness", "mechanism", "jtbd", "voice_and_structure", "register")
+# Required breakdown keys — bound to the schema's single source of truth so the
+# normalizer below and RewriteScore validation can never drift (a mismatch would
+# silently turn every score into None). Kept as a local alias for readability.
+_BREAKDOWN_KEYS = REWRITE_SCORE_KEYS
 _SCORE_MIN = 0
 _SCORE_MAX = 20
 _NOTES_MAX_CHARS = 500

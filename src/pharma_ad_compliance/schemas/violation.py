@@ -14,7 +14,10 @@ from .creative import DrugClass
 RewriteFrame = Literal["mechanism", "jtbd", "benefit"]
 
 # Required keys for the 5-criterion rewrite-quality rubric (0-20 each).
-_REWRITE_SCORE_KEYS: tuple[str, ...] = (
+# Public + the single source of truth: quality_agent imports this to build and
+# normalize its payload, so the two can never drift (a mismatch would silently
+# fail RewriteScore validation and turn every score into None).
+REWRITE_SCORE_KEYS: tuple[str, ...] = (
     "concreteness",
     "mechanism",
     "jtbd",
@@ -141,7 +144,7 @@ class RewriteScore(BaseModel):
     @model_validator(mode="after")
     def _check_breakdown(self) -> RewriteScore:
         keys = set(self.breakdown.keys())
-        expected = set(_REWRITE_SCORE_KEYS)
+        expected = set(REWRITE_SCORE_KEYS)
         if keys != expected:
             missing = expected - keys
             extra = keys - expected

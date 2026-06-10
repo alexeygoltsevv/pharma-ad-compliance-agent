@@ -8,6 +8,7 @@ from .creative import (
     UrlCreative,
 )
 from .violation import (
+    REWRITE_SCORE_KEYS,
     CaseRef,
     ComplianceReport,
     RewriteFrame,
@@ -19,6 +20,7 @@ from .violation import (
 )
 
 __all__ = [
+    "REWRITE_SCORE_KEYS",
     "CaseRef",
     "Creative",
     "DrugClass",
